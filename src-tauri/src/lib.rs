@@ -3,6 +3,7 @@ mod error;
 mod mcp;
 mod state;
 
+use mcp::client::McpConnections;
 use state::AppState;
 use std::sync::Mutex;
 
@@ -15,12 +16,16 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_http::init())
         .manage(Mutex::new(AppState::new()))
+        .manage(tokio::sync::Mutex::new(McpConnections::new()))
         .invoke_handler(tauri::generate_handler![
             commands::servers::list_servers,
             commands::servers::add_server,
             commands::servers::remove_server,
             commands::connections::connect_server,
             commands::connections::disconnect_server,
+            commands::tools::list_tools,
+            commands::tools::list_all_tools,
+            commands::tools::call_tool,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
