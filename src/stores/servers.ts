@@ -3,10 +3,13 @@ import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { ServerConfig, ServerConfigInput } from '@/types/server';
 
+export type OAuthStatus = 'idle' | 'discovering' | 'awaiting_browser' | 'exchanging_code' | 'authorized' | 'error';
+
 export const useServersStore = defineStore('servers', () => {
   const servers = ref<ServerConfig[]>([]);
   const selectedServerId = ref<string | null>(null);
   const lastError = ref<Record<string, string>>({});
+  const oauthStatus = ref<Record<string, OAuthStatus>>({});
 
   async function loadServers() {
     try {
@@ -90,10 +93,39 @@ export const useServersStore = defineStore('servers', () => {
     delete lastError.value[serverId];
   }
 
+  function setOAuthStatus(serverId: string, status: OAuthStatus) {
+    oauthStatus.value[serverId] = status;
+  }
+
+  function clearOAuthStatus(serverId: string) {
+    delete oauthStatus.value[serverId];
+  }
+
+  async function startOAuth(id: string) {
+    oauthStatus.value[id] = 'discovering';
+    clearError(id);
+    try {
+      await invoke('start_oauth_flow', { id });
+    } catch (e) {
+      oauthStatus.value[id] = 'error';
+      setError(id, String(e));
+    }
+  }
+
+  async function clearOAuthTokens(id: string) {
+    try {
+      await invoke('clear_oauth_tokens', { id });
+      delete oauthStatus.value[id];
+    } catch (e) {
+      console.error('Failed to clear OAuth tokens:', e);
+    }
+  }
+
   return {
     servers,
     selectedServerId,
     lastError,
+    oauthStatus,
     loadServers,
     addServer,
     updateServer,
@@ -104,5 +136,9 @@ export const useServersStore = defineStore('servers', () => {
     updateServerStatus,
     setError,
     clearError,
+    setOAuthStatus,
+    clearOAuthStatus,
+    startOAuth,
+    clearOAuthTokens,
   };
 });

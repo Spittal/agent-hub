@@ -1,6 +1,6 @@
 import { onMounted, onUnmounted } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { useServersStore } from '@/stores/servers';
+import { useServersStore, type OAuthStatus } from '@/stores/servers';
 import { useToolsStore } from '@/stores/tools';
 import type { ServerStatus } from '@/types/server';
 import type { McpTool } from '@/types/mcp';
@@ -21,6 +21,15 @@ interface ToolsUpdatedPayload {
   serverId: string;
   serverName: string;
   tools: McpTool[];
+}
+
+interface OAuthRequiredPayload {
+  serverId: string;
+}
+
+interface OAuthStatusPayload {
+  serverId: string;
+  status: OAuthStatus;
 }
 
 export function useEvents() {
@@ -52,6 +61,22 @@ export function useEvents() {
           event.payload.serverName,
           event.payload.tools
         );
+      })
+    );
+
+    unlisteners.push(
+      await listen<OAuthRequiredPayload>('oauth-required', (event) => {
+        serversStore.setOAuthStatus(event.payload.serverId, 'idle');
+      })
+    );
+
+    unlisteners.push(
+      await listen<OAuthStatusPayload>('oauth-status-changed', (event) => {
+        serversStore.setOAuthStatus(event.payload.serverId, event.payload.status);
+        // Clear OAuth status when connected successfully
+        if (event.payload.status === 'authorized') {
+          // Will be cleared once server-status-changed fires with 'connected'
+        }
       })
     );
   });

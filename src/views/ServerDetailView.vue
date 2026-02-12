@@ -1,21 +1,100 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { useRouter } from 'vue-router';
 import { useServersStore } from '@/stores/servers';
 import { storeToRefs } from 'pinia';
 import ToolBrowser from '@/components/ToolBrowser.vue';
 import LogViewer from '@/components/LogViewer.vue';
 
+const router = useRouter();
 const store = useServersStore();
-const { servers, selectedServerId, lastError } = storeToRefs(store);
+const { servers, selectedServerId, lastError, oauthStatus } = storeToRefs(store);
 
 const selectedServer = computed(() =>
   servers.value.find((s) => s.id === selectedServerId.value)
 );
 
-const serverError = computed(() => {
+const serverErrorRaw = computed(() => {
   if (!selectedServer.value) return null;
   return lastError.value[selectedServer.value.id] ?? null;
 });
+
+const serverError = computed(() => {
+  const raw = serverErrorRaw.value;
+  if (!raw) return null;
+  // Detect HTML responses (server returned a webpage, not JSON-RPC)
+  if (raw.includes('<!DOCTYPE') || raw.includes('<html')) {
+    return 'Server returned an HTML page instead of a JSON-RPC response. Check that the URL is an MCP endpoint (e.g. https://mcp.example.com/sse), not a documentation page.';
+  }
+  // Truncate very long errors
+  if (raw.length > 300) {
+    return raw.slice(0, 300) + '...';
+  }
+  return raw;
+});
+
+const serverOAuthStatus = computed(() => {
+  if (!selectedServer.value) return null;
+  return oauthStatus.value[selectedServer.value.id] ?? null;
+});
+
+const isAuthRequired = computed(() => {
+  return serverOAuthStatus.value === 'idle'
+    || (serverError.value?.includes('Authentication required'));
+});
+
+const isOAuthInProgress = computed(() => {
+  const s = serverOAuthStatus.value;
+  return s === 'discovering' || s === 'awaiting_browser' || s === 'exchanging_code';
+});
+
+const isOAuthAuthorized = computed(() => {
+  return serverOAuthStatus.value === 'authorized';
+});
+
+const oauthProgressLabel = computed(() => {
+  switch (serverOAuthStatus.value) {
+    case 'discovering': return 'Discovering OAuth server...';
+    case 'awaiting_browser': return 'Complete sign-in in your browser...';
+    case 'exchanging_code': return 'Exchanging authorization code...';
+    default: return '';
+  }
+});
+
+const confirmingDelete = ref(false);
+
+async function deleteServer() {
+  if (!selectedServer.value) return;
+  const id = selectedServer.value.id;
+  if (selectedServer.value.status === 'connected') {
+    await store.disconnectServer(id);
+  }
+  await store.removeServer(id);
+  router.push('/');
+}
+
+async function toggleEnabled() {
+  if (!selectedServer.value) return;
+  const server = selectedServer.value;
+  const newEnabled = !server.enabled;
+  if (!newEnabled && server.status === 'connected') {
+    await store.disconnectServer(server.id);
+  }
+  await store.updateServer(server.id, {
+    name: server.name,
+    transport: server.transport,
+    enabled: newEnabled,
+    command: server.command,
+    args: server.args,
+    env: server.env,
+    url: server.url,
+    headers: server.headers,
+    tags: server.tags,
+  });
+  if (newEnabled) {
+    store.connectServer(server.id);
+  }
+}
 
 type Tab = 'overview' | 'tools' | 'logs';
 const activeTab = ref<Tab>('overview');
@@ -49,7 +128,20 @@ function formatDate(iso: string | undefined): string {
       />
       <h1 class="text-sm font-medium">{{ selectedServer.name }}</h1>
       <span class="font-mono text-xs text-text-muted">{{ selectedServer.transport }}</span>
-      <div class="ml-auto flex gap-2">
+      <div class="ml-auto flex items-center gap-2">
+        <!-- Enable/Disable toggle -->
+        <button
+          class="relative h-5 w-9 rounded-full transition-colors"
+          :class="selectedServer.enabled ? 'bg-accent' : 'bg-surface-3'"
+          :title="selectedServer.enabled ? 'Disable server' : 'Enable server'"
+          @click="toggleEnabled"
+        >
+          <span
+            class="absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white transition-transform"
+            :class="{ 'translate-x-4': selectedServer.enabled }"
+          />
+        </button>
+
         <router-link
           :to="`/edit/${selectedServer.id}`"
           class="rounded bg-surface-3 px-3 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-2"
@@ -59,6 +151,8 @@ function formatDate(iso: string | undefined): string {
         <button
           v-if="selectedServer.status !== 'connected'"
           class="rounded bg-accent px-3 py-1 text-xs text-white transition-colors hover:bg-accent-hover"
+          :disabled="!selectedServer.enabled"
+          :class="{ 'opacity-50 cursor-not-allowed': !selectedServer.enabled }"
           @click="store.connectServer(selectedServer.id)"
         >
           Connect
@@ -70,6 +164,29 @@ function formatDate(iso: string | undefined): string {
         >
           Disconnect
         </button>
+
+        <!-- Delete -->
+        <button
+          v-if="!confirmingDelete"
+          class="rounded bg-surface-3 px-3 py-1 text-xs text-text-muted transition-colors hover:bg-status-error/20 hover:text-status-error"
+          @click="confirmingDelete = true"
+        >
+          Delete
+        </button>
+        <template v-else>
+          <button
+            class="rounded bg-status-error px-3 py-1 text-xs text-white transition-colors hover:bg-status-error/80"
+            @click="deleteServer"
+          >
+            Confirm
+          </button>
+          <button
+            class="rounded bg-surface-3 px-3 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-2"
+            @click="confirmingDelete = false"
+          >
+            Cancel
+          </button>
+        </template>
       </div>
     </header>
 
@@ -92,7 +209,29 @@ function formatDate(iso: string | undefined): string {
     <div class="min-h-0 flex-1">
       <!-- Overview -->
       <div v-if="activeTab === 'overview'" class="h-full overflow-y-auto p-4">
-        <div v-if="serverError" class="mb-4 rounded border border-status-error/30 bg-status-error/10 p-3">
+        <!-- OAuth: Authentication Required -->
+        <div v-if="isAuthRequired && !isOAuthInProgress" class="mb-4 rounded border border-accent/30 bg-accent/10 p-4">
+          <p class="mb-1 font-mono text-xs font-medium text-accent">Authentication Required</p>
+          <p class="mb-3 text-xs text-text-secondary">This server requires OAuth authorization to connect.</p>
+          <button
+            class="rounded bg-accent px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover"
+            @click="store.startOAuth(selectedServer!.id)"
+          >
+            Authorize
+          </button>
+        </div>
+
+        <!-- OAuth: In-progress -->
+        <div v-else-if="isOAuthInProgress" class="mb-4 rounded border border-accent/30 bg-accent/10 p-4">
+          <p class="mb-1 font-mono text-xs font-medium text-accent">Authorizing</p>
+          <div class="flex items-center gap-2">
+            <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+            <p class="text-xs text-text-secondary">{{ oauthProgressLabel }}</p>
+          </div>
+        </div>
+
+        <!-- Generic error (non-auth) -->
+        <div v-else-if="serverError && !isAuthRequired" class="mb-4 rounded border border-status-error/30 bg-status-error/10 p-3">
           <p class="mb-1 font-mono text-xs font-medium text-status-error">Connection Error</p>
           <p class="font-mono text-xs text-text-secondary break-all">{{ serverError }}</p>
         </div>
@@ -102,6 +241,15 @@ function formatDate(iso: string | undefined): string {
             <div class="flex items-center gap-2">
               <span class="h-1.5 w-1.5 rounded-full" :class="statusColor(selectedServer.status)" />
               <span class="font-mono text-xs text-text-secondary capitalize">{{ statusLabel(selectedServer.status) }}</span>
+            </div>
+            <div v-if="isOAuthAuthorized || (selectedServer.status === 'connected' && serverOAuthStatus)" class="mt-2 flex items-center justify-between">
+              <span class="text-[11px] text-accent">OAuth authorized</span>
+              <button
+                class="text-[11px] text-text-muted transition-colors hover:text-status-error"
+                @click="store.clearOAuthTokens(selectedServer.id)"
+              >
+                Revoke
+              </button>
             </div>
             <div class="mt-2 text-[11px] text-text-muted">
               Last connected: {{ formatDate(selectedServer.lastConnected) }}
