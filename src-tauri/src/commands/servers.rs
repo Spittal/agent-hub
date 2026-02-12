@@ -1,7 +1,8 @@
-use tauri::State;
+use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::persistence::save_servers;
 use crate::state::{ServerConfig, ServerConfigInput, ServerStatus, SharedState};
 
 #[tauri::command]
@@ -12,6 +13,7 @@ pub async fn list_servers(state: State<'_, SharedState>) -> Result<Vec<ServerCon
 
 #[tauri::command]
 pub async fn add_server(
+    app: AppHandle,
     state: State<'_, SharedState>,
     input: ServerConfigInput,
 ) -> Result<ServerConfig, AppError> {
@@ -31,11 +33,16 @@ pub async fn add_server(
 
     let mut state = state.lock().unwrap();
     state.servers.push(server.clone());
+    save_servers(&app, &state.servers);
     Ok(server)
 }
 
 #[tauri::command]
-pub async fn remove_server(state: State<'_, SharedState>, id: String) -> Result<(), AppError> {
+pub async fn remove_server(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    id: String,
+) -> Result<(), AppError> {
     let mut state = state.lock().unwrap();
     let len_before = state.servers.len();
     state.servers.retain(|s| s.id != id);
@@ -43,5 +50,6 @@ pub async fn remove_server(state: State<'_, SharedState>, id: String) -> Result<
         return Err(AppError::ServerNotFound(id));
     }
     state.connections.remove(&id);
+    save_servers(&app, &state.servers);
     Ok(())
 }
