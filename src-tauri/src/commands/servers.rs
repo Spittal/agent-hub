@@ -26,6 +26,7 @@ pub async fn add_server(
         args: input.args,
         env: input.env,
         url: input.url,
+        headers: input.headers,
         tags: input.tags,
         status: Some(ServerStatus::Disconnected),
         last_connected: None,
@@ -52,4 +53,33 @@ pub async fn remove_server(
     state.connections.remove(&id);
     save_servers(&app, &state.servers);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn update_server(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    id: String,
+    input: ServerConfigInput,
+) -> Result<ServerConfig, AppError> {
+    let mut s = state.lock().unwrap();
+    let server = s
+        .servers
+        .iter_mut()
+        .find(|s| s.id == id)
+        .ok_or_else(|| AppError::ServerNotFound(id.clone()))?;
+
+    server.name = input.name;
+    server.transport = input.transport;
+    server.command = input.command;
+    server.args = input.args;
+    server.env = input.env;
+    server.url = input.url;
+    server.headers = input.headers;
+    server.enabled = input.enabled;
+    server.tags = input.tags;
+
+    let updated = server.clone();
+    save_servers(&app, &s.servers);
+    Ok(updated)
 }

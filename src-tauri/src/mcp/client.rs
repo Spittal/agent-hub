@@ -5,12 +5,19 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::error::AppError;
+use crate::mcp::http_transport::HttpTransport;
 use crate::mcp::transport::StdioTransport;
 use crate::mcp::types::*;
 
-/// MCP client wrapping a stdio transport.
+/// Transport abstraction — either stdio (local process) or HTTP (remote server).
+enum Transport {
+    Stdio(StdioTransport),
+    Http(HttpTransport),
+}
+
+/// MCP client wrapping either a stdio or HTTP transport.
 pub struct McpClient {
-    transport: StdioTransport,
+    transport: Transport,
     pub server_capabilities: Option<ServerCapabilities>,
     pub server_info: Option<ServerInfo>,
     pub tools: Vec<McpToolDef>,
@@ -27,7 +34,27 @@ impl McpClient {
         let transport = StdioTransport::spawn(app, command, args, env)?;
 
         let mut client = Self {
-            transport,
+            transport: Transport::Stdio(transport),
+            server_capabilities: None,
+            server_info: None,
+            tools: Vec::new(),
+        };
+
+        client.initialize().await?;
+        client.discover_tools().await?;
+
+        Ok(client)
+    }
+
+    /// Connect to a remote MCP server via HTTP, perform initialization, and discover tools.
+    pub async fn connect_http(
+        url: &str,
+        headers: HashMap<String, String>,
+    ) -> Result<Self, AppError> {
+        let transport = HttpTransport::connect(url, headers).await?;
+
+        let mut client = Self {
+            transport: Transport::Http(transport),
             server_capabilities: None,
             server_info: None,
             tools: Vec::new(),
@@ -57,7 +84,6 @@ impl McpClient {
             .map_err(|e| AppError::Protocol(format!("Failed to serialize init params: {e}")))?;
 
         let response = self
-            .transport
             .send_request("initialize", Some(params_json))
             .await?;
 
@@ -77,8 +103,7 @@ impl McpClient {
         self.server_info = Some(result.server_info);
 
         // Send initialized notification
-        self.transport
-            .send_notification("notifications/initialized", None)
+        self.send_notification("notifications/initialized", None)
             .await?;
 
         Ok(())
@@ -87,7 +112,6 @@ impl McpClient {
     /// Send tools/list and store the results.
     async fn discover_tools(&mut self) -> Result<(), AppError> {
         let response = self
-            .transport
             .send_request("tools/list", Some(serde_json::json!({})))
             .await?;
 
@@ -126,7 +150,6 @@ impl McpClient {
         });
 
         let response = self
-            .transport
             .send_request("tools/call", Some(params))
             .await?;
 
@@ -140,14 +163,49 @@ impl McpClient {
         Ok(call_result)
     }
 
-    /// Get the PID of the child process.
+    /// Get the PID of the child process (stdio only).
     pub fn child_pid(&self) -> Option<u32> {
-        self.transport.child_pid
+        match &self.transport {
+            Transport::Stdio(t) => t.child_pid,
+            Transport::Http(_) => None,
+        }
     }
 
-    /// Shut down the client and kill the child process.
+    /// Shut down the client.
     pub fn shutdown(&self) {
-        self.transport.shutdown();
+        match &self.transport {
+            Transport::Stdio(t) => t.shutdown(),
+            Transport::Http(_) => {
+                // HTTP transport has no persistent process to kill.
+                // Session cleanup (DELETE) would require async; dropping the
+                // transport is sufficient — the server will expire the session.
+                tracing::debug!("HTTP transport shutdown");
+            }
+        }
+    }
+
+    // -- Private helpers delegating to the active transport --
+
+    async fn send_request(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<JsonRpcResponse, AppError> {
+        match &self.transport {
+            Transport::Stdio(t) => t.send_request(method, params).await,
+            Transport::Http(t) => t.send_request(method, params).await,
+        }
+    }
+
+    async fn send_notification(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<(), AppError> {
+        match &self.transport {
+            Transport::Stdio(t) => t.send_notification(method, params).await,
+            Transport::Http(t) => t.send_notification(method, params).await,
+        }
     }
 }
 

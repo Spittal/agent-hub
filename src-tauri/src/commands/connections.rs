@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use tauri::{AppHandle, Emitter, State};
 use tracing::{error, info};
 
@@ -15,7 +17,7 @@ pub async fn connect_server(
     id: String,
 ) -> Result<(), AppError> {
     // Read config while holding the lock briefly
-    let (command, args, env) = {
+    let server_config = {
         let mut s = state.lock().unwrap();
         let server = s
             .servers
@@ -27,25 +29,16 @@ pub async fn connect_server(
             return Err(AppError::AlreadyConnected(id.clone()));
         }
 
-        match server.transport {
-            ServerTransport::Http => {
-                return Err(AppError::Transport(
-                    "HTTP transport not yet implemented".into(),
-                ));
-            }
-            ServerTransport::Stdio => {}
-        }
-
-        let command = server
-            .command
-            .clone()
-            .ok_or_else(|| AppError::ConnectionFailed("No command specified".into()))?;
-        let args = server.args.clone().unwrap_or_default();
-        let env = server.env.clone().unwrap_or_default();
-
         server.status = Some(ServerStatus::Connecting);
 
-        (command, args, env)
+        ServerConnectConfig {
+            transport: server.transport.clone(),
+            command: server.command.clone(),
+            args: server.args.clone().unwrap_or_default(),
+            env: server.env.clone().unwrap_or_default(),
+            url: server.url.clone(),
+            headers: server.headers.clone().unwrap_or_default(),
+        }
     };
 
     let _ = app.emit(
@@ -54,7 +47,20 @@ pub async fn connect_server(
     );
 
     // Do the async connection work WITHOUT holding either lock
-    let client_result = McpClient::connect_stdio(&app, &command, &args, &env).await;
+    let client_result = match server_config.transport {
+        ServerTransport::Stdio => {
+            let command = server_config
+                .command
+                .ok_or_else(|| AppError::ConnectionFailed("No command specified".into()))?;
+            McpClient::connect_stdio(&app, &command, &server_config.args, &server_config.env).await
+        }
+        ServerTransport::Http => {
+            let url = server_config
+                .url
+                .ok_or_else(|| AppError::ConnectionFailed("No URL specified".into()))?;
+            McpClient::connect_http(&url, server_config.headers).await
+        }
+    };
 
     match client_result {
         Ok(client) => {
@@ -129,9 +135,20 @@ pub async fn connect_server(
                 }
             }
 
+            let error_message = e.to_string();
+
             let _ = app.emit(
                 "server-status-changed",
-                serde_json::json!({ "serverId": id, "status": "error", "error": e.to_string() }),
+                serde_json::json!({ "serverId": id, "status": "error", "error": error_message }),
+            );
+
+            let _ = app.emit(
+                "server-error",
+                serde_json::json!({
+                    "serverId": id,
+                    "error": error_message,
+                    "details": format!("Connection to server {id} failed: {error_message}")
+                }),
             );
 
             Err(e)
@@ -174,6 +191,16 @@ pub async fn disconnect_server(
     info!("Disconnected server {id}");
 
     Ok(())
+}
+
+/// Temporary struct to hold server config data extracted from the lock.
+struct ServerConnectConfig {
+    transport: ServerTransport,
+    command: Option<String>,
+    args: Vec<String>,
+    env: HashMap<String, String>,
+    url: Option<String>,
+    headers: HashMap<String, String>,
 }
 
 fn chrono_now() -> String {

@@ -46,6 +46,7 @@ pub fn run() {
             commands::servers::list_servers,
             commands::servers::add_server,
             commands::servers::remove_server,
+            commands::servers::update_server,
             commands::connections::connect_server,
             commands::connections::disconnect_server,
             commands::tools::list_tools,
