@@ -66,7 +66,7 @@ onMounted(() => {
             Configure Claude Desktop to connect to this app instead of individual servers.
           </p>
 
-          <div v-if="error" class="rounded bg-red-500/10 px-3 py-2 text-xs text-red-400">
+          <div v-if="error" class="rounded bg-status-error/10 px-3 py-2 text-xs text-status-error">
             Failed to get proxy status: {{ error }}
           </div>
 
@@ -74,7 +74,7 @@ onMounted(() => {
             <div class="flex items-center gap-2">
               <span
                 class="inline-block h-2 w-2 rounded-full"
-                :class="proxyStatus.running ? 'bg-green-400' : 'bg-red-400'"
+                :class="proxyStatus.running ? 'bg-status-connected' : 'bg-status-error'"
               />
               <span class="text-xs text-text-secondary">
                 <template v-if="proxyStatus.running">
@@ -91,9 +91,9 @@ onMounted(() => {
                 Add this to your Claude Desktop config:
               </p>
               <div class="relative">
-                <pre class="overflow-x-auto rounded bg-surface-secondary p-3 font-mono text-xs text-text-primary">{{ claudeDesktopSnippet() }}</pre>
+                <pre class="overflow-x-auto rounded bg-surface-2 p-3 font-mono text-xs text-text-primary">{{ claudeDesktopSnippet() }}</pre>
                 <button
-                  class="absolute top-1.5 right-1.5 rounded bg-surface-tertiary px-2 py-0.5 text-[10px] text-text-muted transition hover:text-text-primary"
+                  class="absolute top-1.5 right-1.5 rounded bg-surface-3 px-2 py-0.5 text-[10px] text-text-muted transition hover:text-text-primary"
                   @click="copySnippet"
                 >
                   {{ copied ? 'Copied' : 'Copy' }}
