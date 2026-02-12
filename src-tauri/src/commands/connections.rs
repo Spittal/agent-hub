@@ -50,7 +50,7 @@ pub async fn connect_server(
 
     let _ = app.emit(
         "server-status-changed",
-        serde_json::json!({ "id": id, "status": "connecting" }),
+        serde_json::json!({ "serverId": id, "status": "connecting" }),
     );
 
     // Do the async connection work WITHOUT holding either lock
@@ -110,7 +110,7 @@ pub async fn connect_server(
 
             let _ = app.emit(
                 "server-status-changed",
-                serde_json::json!({ "id": id, "status": "connected" }),
+                serde_json::json!({ "serverId": id, "status": "connected" }),
             );
             let _ = app.emit(
                 "tools-updated",
@@ -131,7 +131,7 @@ pub async fn connect_server(
 
             let _ = app.emit(
                 "server-status-changed",
-                serde_json::json!({ "id": id, "status": "error", "error": e.to_string() }),
+                serde_json::json!({ "serverId": id, "status": "error", "error": e.to_string() }),
             );
 
             Err(e)
@@ -168,7 +168,7 @@ pub async fn disconnect_server(
 
     let _ = app.emit(
         "server-status-changed",
-        serde_json::json!({ "id": id, "status": "disconnected" }),
+        serde_json::json!({ "serverId": id, "status": "disconnected" }),
     );
 
     info!("Disconnected server {id}");
