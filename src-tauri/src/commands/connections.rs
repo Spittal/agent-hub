@@ -5,8 +5,10 @@ use tracing::{error, info};
 
 use crate::error::AppError;
 use crate::mcp::client::{McpClient, SharedConnections};
+use crate::mcp::oauth;
 use crate::state::{
-    ConnectionState, McpTool, ServerStatus, ServerTransport, SharedState,
+    ConnectionState, McpTool, ServerStatus, ServerTransport, SharedOAuthStore,
+    SharedState,
 };
 
 #[tauri::command]
@@ -14,6 +16,7 @@ pub async fn connect_server(
     app: AppHandle,
     state: State<'_, SharedState>,
     connections: State<'_, SharedConnections>,
+    oauth_store: State<'_, SharedOAuthStore>,
     id: String,
 ) -> Result<(), AppError> {
     // Read config while holding the lock briefly
@@ -46,6 +49,36 @@ pub async fn connect_server(
         serde_json::json!({ "serverId": id, "status": "connecting" }),
     );
 
+    // For HTTP transport, check if we have existing OAuth tokens
+    let access_token = if matches!(server_config.transport, ServerTransport::Http) {
+        let store = oauth_store.lock().await;
+        if let Some(oauth_state) = store.get(&id) {
+            if let Some(ref tokens) = oauth_state.tokens {
+                if !oauth::is_token_expired(tokens) {
+                    Some(tokens.access_token.clone())
+                } else if tokens.refresh_token.is_some() {
+                    // Try to refresh the token
+                    drop(store);
+                    match oauth::try_refresh_token(&oauth_store, &id).await {
+                        Ok(new_token) => Some(new_token),
+                        Err(e) => {
+                            tracing::warn!("Token refresh failed: {e}, will try without token");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Do the async connection work WITHOUT holding either lock
     let client_result = match server_config.transport {
         ServerTransport::Stdio => {
@@ -58,7 +91,7 @@ pub async fn connect_server(
             let url = server_config
                 .url
                 .ok_or_else(|| AppError::ConnectionFailed("No URL specified".into()))?;
-            McpClient::connect_http(&url, server_config.headers).await
+            McpClient::connect_http(&url, server_config.headers, access_token).await
         }
     };
 
@@ -124,6 +157,28 @@ pub async fn connect_server(
             );
 
             Ok(())
+        }
+        Err(AppError::AuthRequired(_)) => {
+            info!("Server {id} requires OAuth authentication");
+
+            {
+                let mut s = state.lock().unwrap();
+                if let Some(server) = s.servers.iter_mut().find(|s| s.id == id) {
+                    server.status = Some(ServerStatus::Error);
+                }
+            }
+
+            let _ = app.emit(
+                "server-status-changed",
+                serde_json::json!({ "serverId": id, "status": "error", "error": "Authentication required. Click Authorize to sign in." }),
+            );
+
+            let _ = app.emit(
+                "oauth-required",
+                serde_json::json!({ "serverId": id }),
+            );
+
+            Err(AppError::AuthRequired("Authentication required. Click Authorize to sign in.".into()))
         }
         Err(e) => {
             error!("Failed to connect to server {id}: {e}");
