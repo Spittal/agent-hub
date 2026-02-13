@@ -1,23 +1,24 @@
 <script setup lang="ts">
 import { ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { useServersStore } from '@/stores/servers';
+import { useSkillsStore } from '@/stores/skills';
 import { storeToRefs } from 'pinia';
+import { statusColor } from '@/composables/useServerStatus';
 
+const router = useRouter();
 const store = useServersStore();
+const skillsStore = useSkillsStore();
 const { servers, selectedServerId } = storeToRefs(store);
+
+function onSelect(id: string) {
+  store.selectServer(id);
+  skillsStore.clearSelection();
+  router.push('/');
+}
 
 const contextMenuId = ref<string | null>(null);
 const contextMenuPos = ref({ x: 0, y: 0 });
-
-function statusColor(status: string, enabled: boolean): string {
-  if (!enabled) return 'bg-surface-3';
-  switch (status) {
-    case 'connected': return 'bg-status-connected';
-    case 'connecting': return 'bg-status-connecting';
-    case 'error': return 'bg-status-error';
-    default: return 'bg-status-disconnected';
-  }
-}
 
 function onContextMenu(e: MouseEvent, id: string) {
   e.preventDefault();
@@ -65,7 +66,7 @@ async function deleteServer(id: string) {
 </script>
 
 <template>
-  <div class="flex-1 overflow-y-auto">
+  <div>
     <div
       v-for="server in servers"
       :key="server.id"
@@ -74,7 +75,7 @@ async function deleteServer(id: string) {
         selectedServerId === server.id ? 'bg-surface-2' : '',
         !server.enabled ? 'opacity-50' : '',
       ]"
-      @click="store.selectServer(server.id)"
+      @click="onSelect(server.id)"
       @contextmenu="onContextMenu($event, server.id)"
     >
       <span
@@ -105,6 +106,7 @@ async function deleteServer(id: string) {
           {{ servers.find(s => s.id === contextMenuId)?.enabled ? 'Disable' : 'Enable' }}
         </button>
         <button
+          v-if="!servers.find(s => s.id === contextMenuId)?.managed"
           class="w-full px-3 py-1.5 text-left text-xs text-status-error transition-colors hover:bg-status-error/10"
           @click="deleteServer(contextMenuId!)"
         >

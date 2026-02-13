@@ -2,8 +2,7 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { ServerConfig, ServerConfigInput } from '@/types/server';
-
-export type OAuthStatus = 'idle' | 'discovering' | 'awaiting_browser' | 'exchanging_code' | 'authorized' | 'error';
+import type { OAuthStatus } from '@/types/oauth';
 
 export const useServersStore = defineStore('servers', () => {
   const servers = ref<ServerConfig[]>([]);
@@ -52,6 +51,14 @@ export const useServersStore = defineStore('servers', () => {
       }
     } catch (e) {
       console.error('Failed to remove server:', e);
+    }
+  }
+
+  async function autoConnectServers() {
+    for (const server of servers.value) {
+      if (server.enabled && (!server.status || server.status === 'disconnected')) {
+        connectServer(server.id);
+      }
     }
   }
 
@@ -127,6 +134,7 @@ export const useServersStore = defineStore('servers', () => {
     lastError,
     oauthStatus,
     loadServers,
+    autoConnectServers,
     addServer,
     updateServer,
     removeServer,

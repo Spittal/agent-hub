@@ -1,18 +1,26 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onMounted, ref } from 'vue';
 import ServerList from './components/ServerList.vue';
+import SkillList from './components/SkillList.vue';
 import StatusBar from './components/StatusBar.vue';
 import { useServersStore } from '@/stores/servers';
+import { useSkillsStore } from '@/stores/skills';
 import { useEvents } from '@/composables/useEvents';
 import { useServerLogs } from '@/composables/useServerLogs';
 
 const serversStore = useServersStore();
+const skillsStore = useSkillsStore();
 
 useEvents();
 useServerLogs();
 
-onMounted(() => {
-  serversStore.loadServers();
+const serversCollapsed = ref(false);
+const skillsCollapsed = ref(false);
+
+onMounted(async () => {
+  await serversStore.loadServers();
+  serversStore.autoConnectServers();
+  skillsStore.loadSkills();
 });
 </script>
 
@@ -23,17 +31,46 @@ onMounted(() => {
       <aside class="flex w-60 flex-col border-r border-border bg-surface-1">
         <!-- Titlebar spacer for macOS traffic light buttons -->
         <div data-tauri-drag-region class="h-8 shrink-0" />
-        <div class="flex items-center justify-between border-b border-border px-3 py-2">
-          <span class="font-mono text-xs font-medium tracking-wide text-text-secondary uppercase">Servers</span>
-          <router-link
-            to="/add"
-            class="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-3 hover:text-text-primary"
-          >
-            <span class="text-sm leading-none">+</span>
-          </router-link>
+
+        <div class="min-h-0 flex-1 overflow-y-auto">
+          <!-- SERVERS section -->
+          <div class="flex items-center justify-between border-b border-border px-3 py-2">
+            <button
+              class="flex items-center gap-1 font-mono text-xs font-medium tracking-wide text-text-secondary uppercase"
+              @click="serversCollapsed = !serversCollapsed"
+            >
+              <span
+                class="inline-block text-[10px] leading-none transition-transform"
+                :class="serversCollapsed ? '-rotate-90' : ''"
+              >&#9662;</span>
+              Servers
+            </button>
+            <router-link
+              to="/add"
+              class="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-3 hover:text-text-primary"
+            >
+              <span class="text-sm leading-none">+</span>
+            </router-link>
+          </div>
+          <ServerList v-show="!serversCollapsed" />
+
+          <!-- SKILLS section -->
+          <div class="flex items-center justify-between border-b border-border px-3 py-2">
+            <button
+              class="flex items-center gap-1 font-mono text-xs font-medium tracking-wide text-text-secondary uppercase"
+              @click="skillsCollapsed = !skillsCollapsed"
+            >
+              <span
+                class="inline-block text-[10px] leading-none transition-transform"
+                :class="skillsCollapsed ? '-rotate-90' : ''"
+              >&#9662;</span>
+              Skills
+            </button>
+          </div>
+          <SkillList v-show="!skillsCollapsed" />
         </div>
-        <ServerList />
-        <div class="mt-auto border-t border-border">
+
+        <div class="shrink-0 border-t border-border">
           <router-link
             to="/settings"
             class="flex items-center gap-2 px-3 py-2 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"

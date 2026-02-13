@@ -1,6 +1,8 @@
 import { onMounted, onUnmounted } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { useServersStore, type OAuthStatus } from '@/stores/servers';
+import { useRouter } from 'vue-router';
+import { useServersStore } from '@/stores/servers';
+import type { OAuthStatus } from '@/types/oauth';
 import { useToolsStore } from '@/stores/tools';
 import type { ServerStatus } from '@/types/server';
 import type { McpTool } from '@/types/mcp';
@@ -32,8 +34,13 @@ interface OAuthStatusPayload {
   status: OAuthStatus;
 }
 
+interface NavigateToServerPayload {
+  serverId: string;
+}
+
 export function useEvents() {
   const unlisteners: UnlistenFn[] = [];
+  const router = useRouter();
 
   onMounted(async () => {
     const serversStore = useServersStore();
@@ -77,6 +84,13 @@ export function useEvents() {
         if (event.payload.status === 'authorized') {
           // Will be cleared once server-status-changed fires with 'connected'
         }
+      })
+    );
+
+    unlisteners.push(
+      await listen<NavigateToServerPayload>('navigate-to-server', (event) => {
+        serversStore.selectServer(event.payload.serverId);
+        router.push('/');
       })
     );
   });

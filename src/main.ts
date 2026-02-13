@@ -23,6 +23,11 @@ const router = createRouter({
       component: () => import('./views/EditServerView.vue'),
     },
     {
+      path: '/skills',
+      name: 'skills',
+      component: () => import('./views/SkillDetailView.vue'),
+    },
+    {
       path: '/settings',
       name: 'settings',
       component: () => import('./views/SettingsView.vue'),
