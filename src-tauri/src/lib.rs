@@ -3,6 +3,7 @@ mod error;
 mod mcp;
 mod persistence;
 mod state;
+mod tray;
 
 use mcp::client::McpConnections;
 use state::{AppState, OAuthStore};
@@ -42,6 +43,8 @@ pub fn run() {
                 }
             });
 
+            tray::setup_tray(app)?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -55,8 +58,16 @@ pub fn run() {
             commands::tools::list_all_tools,
             commands::tools::call_tool,
             commands::proxy::get_proxy_status,
+            commands::integrations::detect_integrations,
+            commands::integrations::enable_integration,
+            commands::integrations::disable_integration,
             commands::oauth::start_oauth_flow,
             commands::oauth::clear_oauth_tokens,
+            commands::skills::list_skills,
+            commands::skills::get_skill_content,
+            commands::memory::get_memory_status,
+            commands::memory::enable_memory,
+            commands::memory::disable_memory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

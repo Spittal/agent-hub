@@ -30,11 +30,15 @@ pub async fn add_server(
         tags: input.tags,
         status: Some(ServerStatus::Disconnected),
         last_connected: None,
+        managed: None,
     };
 
-    let mut state = state.lock().unwrap();
-    state.servers.push(server.clone());
-    save_servers(&app, &state.servers);
+    {
+        let mut state = state.lock().unwrap();
+        state.servers.push(server.clone());
+        save_servers(&app, &state.servers);
+    }
+    crate::tray::rebuild_tray_menu(&app);
     Ok(server)
 }
 
@@ -44,14 +48,24 @@ pub async fn remove_server(
     state: State<'_, SharedState>,
     id: String,
 ) -> Result<(), AppError> {
-    let mut state = state.lock().unwrap();
-    let len_before = state.servers.len();
-    state.servers.retain(|s| s.id != id);
-    if state.servers.len() == len_before {
-        return Err(AppError::ServerNotFound(id));
+    {
+        let mut state = state.lock().unwrap();
+        let is_managed = state.servers.iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.managed)
+            .unwrap_or(false);
+        if is_managed {
+            return Err(AppError::Protocol("Cannot delete a managed server".into()));
+        }
+        let len_before = state.servers.len();
+        state.servers.retain(|s| s.id != id);
+        if state.servers.len() == len_before {
+            return Err(AppError::ServerNotFound(id));
+        }
+        state.connections.remove(&id);
+        save_servers(&app, &state.servers);
     }
-    state.connections.remove(&id);
-    save_servers(&app, &state.servers);
+    crate::tray::rebuild_tray_menu(&app);
     Ok(())
 }
 
@@ -62,24 +76,28 @@ pub async fn update_server(
     id: String,
     input: ServerConfigInput,
 ) -> Result<ServerConfig, AppError> {
-    let mut s = state.lock().unwrap();
-    let server = s
-        .servers
-        .iter_mut()
-        .find(|s| s.id == id)
-        .ok_or_else(|| AppError::ServerNotFound(id.clone()))?;
+    let updated = {
+        let mut s = state.lock().unwrap();
+        let server = s
+            .servers
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or_else(|| AppError::ServerNotFound(id.clone()))?;
 
-    server.name = input.name;
-    server.transport = input.transport;
-    server.command = input.command;
-    server.args = input.args;
-    server.env = input.env;
-    server.url = input.url;
-    server.headers = input.headers;
-    server.enabled = input.enabled;
-    server.tags = input.tags;
+        server.name = input.name;
+        server.transport = input.transport;
+        server.command = input.command;
+        server.args = input.args;
+        server.env = input.env;
+        server.url = input.url;
+        server.headers = input.headers;
+        server.enabled = input.enabled;
+        server.tags = input.tags;
 
-    let updated = server.clone();
-    save_servers(&app, &s.servers);
+        let updated = server.clone();
+        save_servers(&app, &s.servers);
+        updated
+    };
+    crate::tray::rebuild_tray_menu(&app);
     Ok(updated)
 }

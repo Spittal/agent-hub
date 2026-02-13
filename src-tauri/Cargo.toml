@@ -1,6 +1,6 @@
 [package]
 name = "mcp-manager"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [lib]
@@ -15,7 +15,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 tauri-plugin-store = "2"
 tauri-plugin-http = "2"
@@ -34,3 +34,5 @@ rand = "0.9"
 sha2 = "0.10"
 base64 = "0.22"
 url = "2"
+dirs = "6"
+serde_yaml = "0.9"

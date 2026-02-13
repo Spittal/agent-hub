@@ -85,7 +85,7 @@ pub async fn connect_server(
             let command = server_config
                 .command
                 .ok_or_else(|| AppError::ConnectionFailed("No command specified".into()))?;
-            McpClient::connect_stdio(&app, &command, &server_config.args, &server_config.env).await
+            McpClient::connect_stdio(&app, &id, &command, &server_config.args, &server_config.env).await
         }
         ServerTransport::Http => {
             let url = server_config
@@ -97,7 +97,6 @@ pub async fn connect_server(
 
     match client_result {
         Ok(client) => {
-            let child_pid = client.child_pid();
             let server_name;
 
             // Convert discovered tools to McpTool for storage in AppState
@@ -136,7 +135,6 @@ pub async fn connect_server(
                     id.clone(),
                     ConnectionState {
                         tools: tools.clone(),
-                        child_pid,
                     },
                 );
             }
@@ -155,6 +153,8 @@ pub async fn connect_server(
                 "tools-updated",
                 serde_json::json!({ "serverId": id, "tools": tools }),
             );
+
+            crate::tray::rebuild_tray_menu(&app);
 
             Ok(())
         }
@@ -177,6 +177,8 @@ pub async fn connect_server(
                 "oauth-required",
                 serde_json::json!({ "serverId": id }),
             );
+
+            crate::tray::rebuild_tray_menu(&app);
 
             Err(AppError::AuthRequired("Authentication required. Click Authorize to sign in.".into()))
         }
@@ -205,6 +207,8 @@ pub async fn connect_server(
                     "details": format!("Connection to server {id} failed: {error_message}")
                 }),
             );
+
+            crate::tray::rebuild_tray_menu(&app);
 
             Err(e)
         }
@@ -243,6 +247,8 @@ pub async fn disconnect_server(
         serde_json::json!({ "serverId": id, "status": "disconnected" }),
     );
 
+    crate::tray::rebuild_tray_menu(&app);
+
     info!("Disconnected server {id}");
 
     Ok(())
@@ -261,7 +267,7 @@ struct ServerConnectConfig {
 fn chrono_now() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("system clock before UNIX epoch")
         .as_secs();
-    format!("{}", now)
+    format!("{now}")
 }
