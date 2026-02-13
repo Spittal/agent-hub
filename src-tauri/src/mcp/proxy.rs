@@ -71,6 +71,12 @@ pub async fn start_proxy(
     let port = addr.port();
 
     proxy_state.set_running(port).await;
+
+    // Update all enabled AI tool integration configs with the new port
+    if let Err(e) = crate::commands::integrations::update_enabled_integration_ports(port) {
+        tracing::warn!("Failed to update integration configs with new port: {e}");
+    }
+
     info!("MCP proxy server listening on http://127.0.0.1:{port}/mcp");
 
     axum::serve(listener, app).await?;
@@ -90,6 +96,8 @@ async fn handle_mcp_request(
         .unwrap_or_default();
     let id = body.get("id").cloned();
     let params = body.get("params").cloned();
+
+    info!("Proxy request: {method}");
 
     let response = match method {
         "initialize" => handle_initialize(id),
@@ -212,8 +220,16 @@ async fn handle_tools_call(
         }
     };
 
+    info!("Proxy tool call: {server_name}.{actual_tool_name}");
+
     match client.call_tool(&actual_tool_name, arguments).await {
         Ok(result) => {
+            let is_err = result.is_error.unwrap_or(false);
+            if is_err {
+                info!("Proxy tool result: {server_name}.{actual_tool_name} → error");
+            } else {
+                info!("Proxy tool result: {server_name}.{actual_tool_name} → ok");
+            }
             let result_value = match serde_json::to_value(&result) {
                 Ok(v) => v,
                 Err(e) => {
@@ -231,7 +247,7 @@ async fn handle_tools_call(
             })
         }
         Err(e) => {
-            error!("Tool call failed: {e}");
+            error!("Proxy tool call failed: {server_name}.{actual_tool_name} → {e}");
             make_error_response(id, -32603, &format!("Tool call failed: {e}"))
         }
     }

@@ -1,5 +1,8 @@
 pub mod connections;
+pub mod integrations;
+pub mod memory;
 pub mod oauth;
 pub mod proxy;
 pub mod servers;
+pub mod skills;
 pub mod tools;
