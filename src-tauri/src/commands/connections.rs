@@ -157,6 +157,109 @@ pub async fn disconnect_server(
     Ok(())
 }
 
+/// Reconnect servers that were previously connected (called on app startup).
+/// Resets all statuses to Disconnected first, then attempts to reconnect each.
+pub async fn reconnect_on_startup(app: AppHandle) {
+    let servers_to_reconnect: Vec<(String, ServerConnectConfig)> = {
+        let state = app.state::<SharedState>();
+        let mut s = state.lock().unwrap();
+
+        let mut to_reconnect = Vec::new();
+        for server in &mut s.servers {
+            if server.status == Some(ServerStatus::Connected)
+                || server.status == Some(ServerStatus::Connecting)
+            {
+                to_reconnect.push((
+                    server.id.clone(),
+                    ServerConnectConfig {
+                        transport: server.transport.clone(),
+                        command: server.command.clone(),
+                        args: server.args.clone().unwrap_or_default(),
+                        env: server.env.clone().unwrap_or_default(),
+                        url: server.url.clone(),
+                        headers: server.headers.clone().unwrap_or_default(),
+                    },
+                ));
+            }
+            // Reset all to disconnected — real status comes from actual connections
+            server.status = Some(ServerStatus::Disconnected);
+        }
+        to_reconnect
+    };
+
+    if servers_to_reconnect.is_empty() {
+        return;
+    }
+
+    info!(
+        "Auto-reconnecting {} server(s) from previous session",
+        servers_to_reconnect.len()
+    );
+
+    // Wait for the proxy to be ready
+    let proxy_state = app.state::<ProxyState>();
+    for _ in 0..50 {
+        if proxy_state.is_running().await {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let state = app.state::<SharedState>();
+    let connections = app.state::<SharedConnections>();
+    let oauth_store = app.state::<SharedOAuthStore>();
+
+    for (id, config) in servers_to_reconnect {
+        // Mark as connecting
+        {
+            let mut s = state.lock().unwrap();
+            if let Some(server) = s.servers.iter_mut().find(|s| s.id == id) {
+                server.status = Some(ServerStatus::Connecting);
+            }
+        }
+        let _ = app.emit(
+            "server-status-changed",
+            serde_json::json!({ "serverId": id, "status": "connecting" }),
+        );
+
+        let access_token = if matches!(config.transport, ServerTransport::Http) {
+            resolve_access_token(&oauth_store, &id).await
+        } else {
+            None
+        };
+
+        let client_result = match config.transport {
+            ServerTransport::Stdio => {
+                let Some(command) = config.command else {
+                    error!("Server {id} has no command, skipping reconnect");
+                    continue;
+                };
+                McpClient::connect_stdio(&app, &id, &command, &config.args, &config.env).await
+            }
+            ServerTransport::Http => {
+                let Some(url) = config.url else {
+                    error!("Server {id} has no URL, skipping reconnect");
+                    continue;
+                };
+                McpClient::connect_http(&url, config.headers, access_token).await
+            }
+        };
+
+        match client_result {
+            Ok(client) => {
+                if let Err(e) = finalize_connection(&app, &state, &connections, &id, client).await
+                {
+                    error!("Failed to finalize reconnection for {id}: {e}");
+                }
+            }
+            Err(e) => {
+                error!("Failed to reconnect server {id}: {e}");
+                mark_server_error(&app, &state, &id, &e.to_string());
+            }
+        }
+    }
+}
+
 // --- Private helpers ---
 
 /// Temporary struct to hold server config data extracted from the lock.

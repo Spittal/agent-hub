@@ -59,6 +59,12 @@ pub fn run() {
                 }
             });
 
+            // Auto-reconnect servers that were connected in the previous session
+            let reconnect_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                commands::connections::reconnect_on_startup(reconnect_handle).await;
+            });
+
             tray::setup_tray(app)?;
 
             Ok(())
