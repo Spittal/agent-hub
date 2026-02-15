@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use axum::{extract::State as AxumState, http::StatusCode, routing::post, Json, Router};
+use axum::extract::State as AxumState;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
+use axum::routing::post;
+use axum::{Json, Router};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 use tokio::net::TcpListener;
@@ -62,7 +66,7 @@ pub async fn start_proxy(
     };
 
     let app = Router::new()
-        .route("/mcp", post(handle_mcp_request))
+        .route("/mcp", post(handle_mcp_post).get(handle_mcp_get))
         .with_state(state);
 
     // Bind to localhost with port 0 to get a random available port
@@ -84,12 +88,17 @@ pub async fn start_proxy(
     Ok(())
 }
 
-/// Handle incoming JSON-RPC requests at the /mcp endpoint.
-async fn handle_mcp_request(
+/// Handle GET requests — spec says server MUST return SSE stream or 405.
+/// We don't support server-initiated streaming, so return 405.
+async fn handle_mcp_get() -> impl IntoResponse {
+    StatusCode::METHOD_NOT_ALLOWED
+}
+
+/// Handle POST requests — the main JSON-RPC handler.
+async fn handle_mcp_post(
     AxumState(state): AxumState<ProxyAppState>,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, StatusCode> {
-    // Parse the JSON-RPC method
+) -> impl IntoResponse {
     let method = body
         .get("method")
         .and_then(|m| m.as_str())
@@ -97,20 +106,28 @@ async fn handle_mcp_request(
     let id = body.get("id").cloned();
     let params = body.get("params").cloned();
 
+    // Per spec: if the message has no "id", it's a notification or response.
+    // Notifications must get 202 Accepted with no body.
+    let is_notification = id.is_none();
+
     info!("Proxy request: {method}");
+
+    if is_notification {
+        // Accept all notifications — 202 with no body per spec
+        return (StatusCode::ACCEPTED, HeaderMap::new(), String::new());
+    }
 
     let response = match method {
         "initialize" => handle_initialize(id),
-        "notifications/initialized" => {
-            // Notification -- no response required
-            return Ok(Json(serde_json::json!(null)));
-        }
         "tools/list" => handle_tools_list(id, &state),
         "tools/call" => handle_tools_call(id, params, &state).await,
         _ => make_error_response(id, -32601, &format!("Method not found: {method}")),
     };
 
-    Ok(Json(response))
+    let body = serde_json::to_string(&response).unwrap_or_default();
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", "application/json".parse().unwrap());
+    (StatusCode::OK, headers, body)
 }
 
 /// Handle the `initialize` request -- return server info and capabilities.
@@ -262,12 +279,16 @@ fn collect_namespaced_tools(state: &ProxyAppState) -> Vec<Value> {
     for conn_state in s.connections.values() {
         for tool in &conn_state.tools {
             let namespaced_name = format!("{}.{}", tool.server_name, tool.name);
-            tools.push(serde_json::json!({
+            let mut entry = serde_json::json!({
                 "name": namespaced_name,
-                "title": tool.title,
                 "description": tool.description,
                 "inputSchema": tool.input_schema,
-            }));
+            });
+            // Only include title if present — some clients choke on null
+            if let Some(ref title) = tool.title {
+                entry["title"] = serde_json::Value::String(title.clone());
+            }
+            tools.push(entry);
         }
     }
     tools
