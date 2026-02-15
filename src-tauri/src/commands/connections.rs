@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{error, info};
 
 use crate::error::AppError;
 use crate::mcp::client::{McpClient, SharedConnections};
 use crate::mcp::oauth;
+use crate::mcp::proxy::ProxyState;
 use crate::state::{
-    ConnectionState, McpTool, ServerStatus, ServerTransport, SharedOAuthStore,
-    SharedState,
+    ConnectionState, McpTool, ServerStatus, ServerTransport, SharedOAuthStore, SharedState,
 };
 
 #[tauri::command]
@@ -156,6 +156,15 @@ pub async fn connect_server(
 
             crate::tray::rebuild_tray_menu(&app);
 
+            // Update integration configs so AI tools see this server
+            let proxy_state = app.state::<ProxyState>();
+            let port = proxy_state.port().await;
+            if let Err(e) =
+                crate::commands::integrations::update_all_integration_configs(&app, port)
+            {
+                tracing::warn!("Failed to update integration configs after connect: {e}");
+            }
+
             Ok(())
         }
         Err(AppError::AuthRequired(_)) => {
@@ -248,6 +257,13 @@ pub async fn disconnect_server(
     );
 
     crate::tray::rebuild_tray_menu(&app);
+
+    // Update integration configs so AI tools no longer see this server
+    let proxy_state = app.state::<ProxyState>();
+    let port = proxy_state.port().await;
+    if let Err(e) = crate::commands::integrations::update_all_integration_configs(&app, port) {
+        tracing::warn!("Failed to update integration configs after disconnect: {e}");
+    }
 
     info!("Disconnected server {id}");
 

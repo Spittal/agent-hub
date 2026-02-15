@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::extract::State as AxumState;
+use axum::extract::{Path, State as AxumState};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::post;
@@ -66,7 +66,10 @@ pub async fn start_proxy(
     };
 
     let app = Router::new()
-        .route("/mcp", post(handle_mcp_post).get(handle_mcp_get))
+        .route(
+            "/mcp/{server_id}",
+            post(handle_mcp_post).get(handle_mcp_get),
+        )
         .with_state(state);
 
     // Bind to localhost with port 0 to get a random available port
@@ -77,11 +80,13 @@ pub async fn start_proxy(
     proxy_state.set_running(port).await;
 
     // Update all enabled AI tool integration configs with the new port
-    if let Err(e) = crate::commands::integrations::update_enabled_integration_ports(port) {
-        tracing::warn!("Failed to update integration configs with new port: {e}");
+    if let Err(e) =
+        crate::commands::integrations::update_all_integration_configs(&app_handle, port)
+    {
+        tracing::warn!("Failed to update integration configs on startup: {e}");
     }
 
-    info!("MCP proxy server listening on http://127.0.0.1:{port}/mcp");
+    info!("MCP proxy server listening on http://127.0.0.1:{port}/mcp/{{server_id}}");
 
     axum::serve(listener, app).await?;
 
@@ -94,9 +99,10 @@ async fn handle_mcp_get() -> impl IntoResponse {
     StatusCode::METHOD_NOT_ALLOWED
 }
 
-/// Handle POST requests — the main JSON-RPC handler.
+/// Handle POST requests — per-server JSON-RPC handler.
 async fn handle_mcp_post(
     AxumState(state): AxumState<ProxyAppState>,
+    Path(server_id): Path<String>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     let method = body
@@ -110,17 +116,41 @@ async fn handle_mcp_post(
     // Notifications must get 202 Accepted with no body.
     let is_notification = id.is_none();
 
-    info!("Proxy request: {method}");
-
     if is_notification {
-        // Accept all notifications — 202 with no body per spec
         return (StatusCode::ACCEPTED, HeaderMap::new(), String::new());
     }
 
+    // Look up the server by ID
+    let server_name = {
+        let app_state = state.app_handle.state::<SharedState>();
+        let s = app_state.lock().unwrap();
+        s.servers
+            .iter()
+            .find(|srv| srv.id == server_id)
+            .map(|srv| srv.name.clone())
+    };
+
+    let server_name = match server_name {
+        Some(name) => name,
+        None => {
+            let resp = make_error_response(
+                id,
+                -32602,
+                &format!("No server found with ID: {server_id}"),
+            );
+            let body = serde_json::to_string(&resp).unwrap_or_default();
+            let mut headers = HeaderMap::new();
+            headers.insert("content-type", "application/json".parse().unwrap());
+            return (StatusCode::OK, headers, body);
+        }
+    };
+
+    info!("Proxy [{server_name}] {method}");
+
     let response = match method {
-        "initialize" => handle_initialize(id),
-        "tools/list" => handle_tools_list(id, &state),
-        "tools/call" => handle_tools_call(id, params, &state).await,
+        "initialize" => handle_initialize(id, &server_name),
+        "tools/list" => handle_tools_list(id, &server_id, &state),
+        "tools/call" => handle_tools_call(id, params, &server_id, &server_name, &state).await,
         _ => make_error_response(id, -32601, &format!("Method not found: {method}")),
     };
 
@@ -131,7 +161,7 @@ async fn handle_mcp_post(
 }
 
 /// Handle the `initialize` request -- return server info and capabilities.
-fn handle_initialize(id: Option<Value>) -> Value {
+fn handle_initialize(id: Option<Value>, server_name: &str) -> Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -143,16 +173,16 @@ fn handle_initialize(id: Option<Value>) -> Value {
                 }
             },
             "serverInfo": {
-                "name": "MCP Manager Proxy",
+                "name": format!("MCP Manager — {server_name}"),
                 "version": env!("CARGO_PKG_VERSION")
             }
         }
     })
 }
 
-/// Handle `tools/list` -- aggregate tools from all connected backend MCP servers.
-fn handle_tools_list(id: Option<Value>, state: &ProxyAppState) -> Value {
-    let tools = collect_namespaced_tools(state);
+/// Handle `tools/list` -- return tools for this specific server only.
+fn handle_tools_list(id: Option<Value>, server_id: &str, state: &ProxyAppState) -> Value {
+    let tools = collect_server_tools(server_id, state);
 
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -163,10 +193,12 @@ fn handle_tools_list(id: Option<Value>, state: &ProxyAppState) -> Value {
     })
 }
 
-/// Handle `tools/call` -- parse the namespaced tool name, route to the correct backend.
+/// Handle `tools/call` -- route directly to this server's backend.
 async fn handle_tools_call(
     id: Option<Value>,
     params: Option<Value>,
+    server_id: &str,
+    server_name: &str,
     state: &ProxyAppState,
 ) -> Value {
     let params = match params {
@@ -188,45 +220,10 @@ async fn handle_tools_call(
         .cloned()
         .unwrap_or(serde_json::json!({}));
 
-    // Parse namespaced tool name: "serverName.toolName"
-    let (server_name, actual_tool_name) = match tool_name.split_once('.') {
-        Some((sn, tn)) => (sn.to_string(), tn.to_string()),
-        None => {
-            return make_error_response(
-                id,
-                -32602,
-                &format!(
-                    "Tool name must be namespaced as 'serverName.toolName', got: {tool_name}"
-                ),
-            );
-        }
-    };
-
-    // Find the server ID by name
-    let server_id = {
-        let app_state = state.app_handle.state::<SharedState>();
-        let s = app_state.lock().unwrap();
-        s.servers
-            .iter()
-            .find(|srv| srv.name == server_name)
-            .map(|srv| srv.id.clone())
-    };
-
-    let server_id = match server_id {
-        Some(id_val) => id_val,
-        None => {
-            return make_error_response(
-                id,
-                -32602,
-                &format!("No server found with name: {server_name}"),
-            );
-        }
-    };
-
-    // Call the tool on the matching backend connection
+    // Call the tool on this specific server
     let connections = state.app_handle.state::<SharedConnections>();
     let conns: tokio::sync::MutexGuard<'_, McpConnections> = connections.lock().await;
-    let client = match conns.get(&server_id) {
+    let client = match conns.get(server_id) {
         Some(c) => c,
         None => {
             return make_error_response(
@@ -237,15 +234,15 @@ async fn handle_tools_call(
         }
     };
 
-    info!("Proxy tool call: {server_name}.{actual_tool_name}");
+    info!("Proxy tool call: {server_name}.{tool_name}");
 
-    match client.call_tool(&actual_tool_name, arguments).await {
+    match client.call_tool(&tool_name, arguments).await {
         Ok(result) => {
             let is_err = result.is_error.unwrap_or(false);
             if is_err {
-                info!("Proxy tool result: {server_name}.{actual_tool_name} → error");
+                info!("Proxy tool result: {server_name}.{tool_name} -> error");
             } else {
-                info!("Proxy tool result: {server_name}.{actual_tool_name} → ok");
+                info!("Proxy tool result: {server_name}.{tool_name} -> ok");
             }
             let result_value = match serde_json::to_value(&result) {
                 Ok(v) => v,
@@ -264,32 +261,35 @@ async fn handle_tools_call(
             })
         }
         Err(e) => {
-            error!("Proxy tool call failed: {server_name}.{actual_tool_name} → {e}");
+            error!("Proxy tool call failed: {server_name}.{tool_name} -> {e}");
             make_error_response(id, -32603, &format!("Tool call failed: {e}"))
         }
     }
 }
 
-/// Collect all tools from all connected servers, namespaced as "serverName.toolName".
-fn collect_namespaced_tools(state: &ProxyAppState) -> Vec<Value> {
+/// Collect tools for a specific server (no namespacing — original tool names).
+fn collect_server_tools(server_id: &str, state: &ProxyAppState) -> Vec<Value> {
     let app_state = state.app_handle.state::<SharedState>();
     let s = app_state.lock().unwrap();
 
+    let conn_state = match s.connections.get(server_id) {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+
     let mut tools = Vec::new();
-    for conn_state in s.connections.values() {
-        for tool in &conn_state.tools {
-            let namespaced_name = format!("{}.{}", tool.server_name, tool.name);
-            let mut entry = serde_json::json!({
-                "name": namespaced_name,
-                "description": tool.description,
-                "inputSchema": tool.input_schema,
-            });
-            // Only include title if present — some clients choke on null
-            if let Some(ref title) = tool.title {
-                entry["title"] = serde_json::Value::String(title.clone());
-            }
-            tools.push(entry);
+    for tool in &conn_state.tools {
+        let mut entry = serde_json::json!({
+            "name": tool.name,
+            "inputSchema": tool.input_schema,
+        });
+        if let Some(ref desc) = tool.description {
+            entry["description"] = serde_json::Value::String(desc.clone());
         }
+        if let Some(ref title) = tool.title {
+            entry["title"] = serde_json::Value::String(title.clone());
+        }
+        tools.push(entry);
     }
     tools
 }

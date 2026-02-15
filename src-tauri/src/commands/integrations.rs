@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::mcp::proxy::ProxyState;
-use crate::persistence::save_servers;
+use crate::persistence::{save_enabled_integrations, save_servers};
 use crate::state::{ServerConfig, ServerStatus, ServerTransport, SharedState};
 
 /// Internal definition for a supported AI tool.
@@ -104,43 +104,56 @@ fn find_tool_def(home: &Path, id: &str) -> Result<ToolDef, AppError> {
         .ok_or_else(|| AppError::IntegrationNotFound(id.to_string()))
 }
 
-/// Parse a tool's config file and return (enabled, port, existing_servers).
-fn parse_config(path: &Path) -> (bool, u16, Vec<ExistingMcpServer>) {
+/// Check whether a URL looks like one of our proxy endpoints.
+fn is_proxy_url(url: &str) -> bool {
+    if let Ok(parsed) = url::Url::parse(url) {
+        parsed.scheme() == "http"
+            && matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1"))
+            && (parsed.path().starts_with("/mcp/") || parsed.path() == "/mcp")
+    } else {
+        false
+    }
+}
+
+/// Parse a tool's config file and return existing non-proxy MCP servers.
+fn parse_existing_servers(path: &Path) -> Vec<ExistingMcpServer> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return (false, 0, Vec::new()),
+        Err(_) => return Vec::new(),
     };
     let config: serde_json::Value = match serde_json::from_str(&content) {
         Ok(v) => v,
-        Err(_) => return (false, 0, Vec::new()),
+        Err(_) => return Vec::new(),
     };
 
     let servers_obj = match config.get("mcpServers").and_then(|v| v.as_object()) {
         Some(obj) => obj,
-        None => return (false, 0, Vec::new()),
+        None => return Vec::new(),
     };
 
-    let mut enabled = false;
-    let mut port: u16 = 0;
     let mut existing = Vec::new();
 
     for (key, value) in servers_obj {
+        // Skip the legacy mcp-manager entry
         if key == "mcp-manager" {
-            enabled = true;
-            if let Some(url) = value.get("url").and_then(|u| u.as_str()) {
-                port = extract_port_from_url(url);
-            }
             continue;
         }
 
-        // Determine transport type and build ExistingMcpServer
+        // Skip entries that point to our proxy
+        let entry_url = value.get("url").and_then(|u| u.as_str()).unwrap_or("");
+        if is_proxy_url(entry_url) {
+            continue;
+        }
+
         let has_url = value.get("url").and_then(|v| v.as_str()).is_some();
-        let has_command = value.get("command").and_then(|v| v.as_str()).is_some();
 
         existing.push(ExistingMcpServer {
             name: key.clone(),
             transport: if has_url { "http".into() } else { "stdio".into() },
-            command: value.get("command").and_then(|v| v.as_str()).map(String::from),
+            command: value
+                .get("command")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             args: value.get("args").and_then(|v| v.as_array()).map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(String::from))
@@ -148,24 +161,13 @@ fn parse_config(path: &Path) -> (bool, u16, Vec<ExistingMcpServer>) {
             }),
             url: if has_url {
                 value.get("url").and_then(|v| v.as_str()).map(String::from)
-            } else if !has_command {
-                // Some entries might only have url
-                None
             } else {
                 None
             },
         });
     }
 
-    (enabled, port, existing)
-}
-
-/// Extract port number from a URL like "http://localhost:12345/mcp".
-fn extract_port_from_url(url: &str) -> u16 {
-    if let Ok(parsed) = url::Url::parse(url) {
-        return parsed.port().unwrap_or(0);
-    }
-    0
+    existing
 }
 
 fn home_dir() -> Result<PathBuf, AppError> {
@@ -179,19 +181,28 @@ fn home_dir() -> Result<PathBuf, AppError> {
 
 #[tauri::command]
 pub async fn detect_integrations(
+    state: State<'_, SharedState>,
     proxy_state: State<'_, ProxyState>,
 ) -> Result<Vec<AiToolInfo>, AppError> {
     let home = home_dir()?;
     let tools = get_tool_definitions(&home);
-    let _port = proxy_state.port().await;
+    let port = proxy_state.port().await;
+
+    let enabled_ids: Vec<String> = {
+        let s = state.lock().unwrap();
+        s.enabled_integrations.clone()
+    };
 
     let mut results = Vec::new();
     for tool in tools {
         let installed = tool.detection_paths.iter().any(|p| p.exists());
-        let (enabled, configured_port, existing_servers) = if installed {
-            parse_config(&tool.config_path)
+        let enabled = enabled_ids.contains(&tool.id);
+
+        // Only show existing servers if the integration is not yet enabled
+        let existing_servers = if installed && !enabled {
+            parse_existing_servers(&tool.config_path)
         } else {
-            (false, 0, Vec::new())
+            Vec::new()
         };
 
         results.push(AiToolInfo {
@@ -200,7 +211,7 @@ pub async fn detect_integrations(
             installed,
             enabled,
             config_path: tool.config_path.display().to_string(),
-            configured_port,
+            configured_port: if enabled { port } else { 0 },
             existing_servers,
         });
     }
@@ -234,7 +245,14 @@ pub async fn enable_integration(
         let existing_names: Vec<String> = s.servers.iter().map(|srv| srv.name.clone()).collect();
 
         for (key, value) in servers_obj {
+            // Skip the legacy mcp-manager entry
             if key == "mcp-manager" {
+                continue;
+            }
+
+            // Skip entries that point to our proxy
+            let entry_url = value.get("url").and_then(|u| u.as_str()).unwrap_or("");
+            if is_proxy_url(entry_url) {
                 continue;
             }
 
@@ -290,7 +308,20 @@ pub async fn enable_integration(
             imported_count += 1;
         }
 
+        // Add this integration to enabled list
+        if !s.enabled_integrations.contains(&id) {
+            s.enabled_integrations.push(id.clone());
+        }
+
         save_servers(&app, &s.servers);
+        save_enabled_integrations(&app, &s.enabled_integrations);
+    } else {
+        // No servers to import, just enable the integration
+        let mut s = state.lock().unwrap();
+        if !s.enabled_integrations.contains(&id) {
+            s.enabled_integrations.push(id.clone());
+        }
+        save_enabled_integrations(&app, &s.enabled_integrations);
     }
 
     if imported_count > 0 {
@@ -301,22 +332,8 @@ pub async fn enable_integration(
         crate::tray::rebuild_tray_menu(&app);
     }
 
-    // Write config with ONLY the mcp-manager proxy entry
-    // (imported servers are now managed by MCP Manager)
-    let config = serde_json::json!({
-        "mcpServers": {
-            "mcp-manager": {
-                "url": format!("http://localhost:{port}/mcp")
-            }
-        }
-    });
-
-    if let Some(parent) = tool.config_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let content = serde_json::to_string_pretty(&config)?;
-    std::fs::write(&tool.config_path, content)?;
+    // Write per-server proxy entries for all currently connected servers
+    write_per_server_config(&app, &tool.config_path, port)?;
 
     info!(
         "Enabled MCP Manager integration for {} (port {})",
@@ -335,36 +352,29 @@ pub async fn enable_integration(
 }
 
 #[tauri::command]
-pub async fn disable_integration(id: String) -> Result<AiToolInfo, AppError> {
+pub async fn disable_integration(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    id: String,
+) -> Result<AiToolInfo, AppError> {
     let home = home_dir()?;
     let tool = find_tool_def(&home, &id)?;
 
-    if !tool.config_path.exists() {
-        return Ok(AiToolInfo {
-            id: tool.id,
-            name: tool.name,
-            installed: true,
-            enabled: false,
-            config_path: tool.config_path.display().to_string(),
-            configured_port: 0,
-            existing_servers: Vec::new(),
-        });
+    // Remove from enabled list
+    {
+        let mut s = state.lock().unwrap();
+        s.enabled_integrations.retain(|i| i != &id);
+        save_enabled_integrations(&app, &s.enabled_integrations);
     }
 
-    let content = std::fs::read_to_string(&tool.config_path)?;
-    let mut config: serde_json::Value = serde_json::from_str(&content)?;
-
-    // Remove only the mcp-manager key
-    if let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
-        servers.remove("mcp-manager");
+    // Remove our proxy entries from the config file
+    if tool.config_path.exists() {
+        remove_proxy_entries(&tool.config_path)?;
     }
-
-    let content = serde_json::to_string_pretty(&config)?;
-    std::fs::write(&tool.config_path, content)?;
 
     info!("Disabled MCP Manager integration for {}", tool.name);
 
-    let (_, _, existing_servers) = parse_config(&tool.config_path);
+    let existing_servers = parse_existing_servers(&tool.config_path);
 
     Ok(AiToolInfo {
         id: tool.id,
@@ -377,49 +387,97 @@ pub async fn disable_integration(id: String) -> Result<AiToolInfo, AppError> {
     })
 }
 
-/// Update the proxy port in all enabled integration configs.
-/// Called from proxy startup — not a Tauri command.
-pub fn update_enabled_integration_ports(port: u16) -> Result<(), AppError> {
+/// Write per-server proxy entries to a tool's config file.
+/// Each connected server gets its own entry in mcpServers.
+fn write_per_server_config(app: &AppHandle, path: &Path, port: u16) -> Result<(), AppError> {
+    let state = app.state::<SharedState>();
+    let s = state.lock().unwrap();
+
+    let mut mcp_servers = serde_json::Map::new();
+    for srv in &s.servers {
+        if srv.status != Some(ServerStatus::Connected) {
+            continue;
+        }
+        mcp_servers.insert(
+            srv.name.clone(),
+            serde_json::json!({
+                "url": format!("http://localhost:{port}/mcp/{}", srv.id)
+            }),
+        );
+    }
+
+    drop(s);
+
+    // Read existing config to preserve other top-level keys
+    let mut config = if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    config["mcpServers"] = serde_json::Value::Object(mcp_servers);
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let content = serde_json::to_string_pretty(&config)?;
+    std::fs::write(path, content)?;
+
+    Ok(())
+}
+
+/// Remove all proxy entries from a tool's config file (entries with our proxy URLs).
+fn remove_proxy_entries(path: &Path) -> Result<(), AppError> {
+    let content = std::fs::read_to_string(path)?;
+    let mut config: serde_json::Value = serde_json::from_str(&content)?;
+
+    if let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+        let proxy_keys: Vec<String> = servers
+            .iter()
+            .filter(|(k, v)| {
+                *k == "mcp-manager"
+                    || v.get("url")
+                        .and_then(|u| u.as_str())
+                        .map(is_proxy_url)
+                        .unwrap_or(false)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        for key in proxy_keys {
+            servers.remove(&key);
+        }
+    }
+
+    let content = serde_json::to_string_pretty(&config)?;
+    std::fs::write(path, content)?;
+
+    Ok(())
+}
+
+/// Update all enabled integration configs with current connected servers.
+/// Called on proxy startup, server connect/disconnect, and enable/disable.
+pub fn update_all_integration_configs(app: &AppHandle, port: u16) -> Result<(), AppError> {
     let home = home_dir()?;
     let tools = get_tool_definitions(&home);
 
+    let enabled_ids: Vec<String> = {
+        let state = app.state::<SharedState>();
+        let s = state.lock().unwrap();
+        s.enabled_integrations.clone()
+    };
+
     for tool in tools {
-        if !tool.config_path.exists() {
+        if !enabled_ids.contains(&tool.id) {
             continue;
         }
 
-        let content = match std::fs::read_to_string(&tool.config_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let mut config: serde_json::Value = match serde_json::from_str(&content) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        // Only update if mcp-manager is already configured
-        let has_entry = config
-            .get("mcpServers")
-            .and_then(|s| s.get("mcp-manager"))
-            .is_some();
-
-        if has_entry {
-            config["mcpServers"]["mcp-manager"] = serde_json::json!({
-                "url": format!("http://localhost:{port}/mcp")
-            });
-
-            match serde_json::to_string_pretty(&config) {
-                Ok(updated) => {
-                    if let Err(e) = std::fs::write(&tool.config_path, updated) {
-                        warn!("Failed to update port for {}: {e}", tool.name);
-                    } else {
-                        info!("Updated {} config with proxy port {port}", tool.name);
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to serialize config for {}: {e}", tool.name);
-                }
-            }
+        if let Err(e) = write_per_server_config(app, &tool.config_path, port) {
+            warn!("Failed to update config for {}: {e}", tool.name);
+        } else {
+            info!("Updated {} config with per-server proxy entries", tool.name);
         }
     }
 

@@ -1,10 +1,11 @@
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::info;
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::mcp::client::SharedConnections;
+use crate::mcp::proxy::ProxyState;
 use crate::persistence::save_servers;
 use crate::state::{ServerConfig, ServerStatus, ServerTransport, SharedState};
 
@@ -290,6 +291,13 @@ pub async fn disable_memory(
         save_servers(&app, &s.servers);
     }
     crate::tray::rebuild_tray_menu(&app);
+
+    // Update integration configs to remove this server's proxy entry
+    let proxy_state = app.state::<ProxyState>();
+    let port = proxy_state.port().await;
+    if let Err(e) = crate::commands::integrations::update_all_integration_configs(&app, port) {
+        tracing::warn!("Failed to update integration configs after memory disable: {e}");
+    }
 
     let _ = app.emit(
         "server-status-changed",

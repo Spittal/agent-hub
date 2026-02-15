@@ -72,6 +72,8 @@ pub struct McpTool {
 pub struct AppState {
     pub servers: Vec<ServerConfig>,
     pub connections: HashMap<String, ConnectionState>,
+    /// IDs of AI tool integrations that MCP Manager is configured to manage.
+    pub enabled_integrations: Vec<String>,
 }
 
 pub struct ConnectionState {
@@ -83,6 +85,7 @@ impl AppState {
         Self {
             servers: Vec::new(),
             connections: HashMap::new(),
+            enabled_integrations: Vec::new(),
         }
     }
 }

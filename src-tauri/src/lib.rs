@@ -21,12 +21,18 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            // Load persisted server configs
+            // Load persisted server configs and enabled integrations
             let servers = persistence::load_servers(app.handle());
-            info!("Loaded {} servers from persistent store", servers.len());
+            let enabled_integrations = persistence::load_enabled_integrations(app.handle());
+            info!(
+                "Loaded {} servers, {} enabled integrations from persistent store",
+                servers.len(),
+                enabled_integrations.len()
+            );
 
             let mut app_state = AppState::new();
             app_state.servers = servers;
+            app_state.enabled_integrations = enabled_integrations;
             app.manage(Mutex::new(app_state));
             app.manage(tokio::sync::Mutex::new(McpConnections::new()));
             app.manage(tokio::sync::Mutex::new(OAuthStore::new()));

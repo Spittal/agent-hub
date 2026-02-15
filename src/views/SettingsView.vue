@@ -91,24 +91,22 @@ function serverSummary(server: AiToolInfo['existingServers'][number]): string {
   return server.transport;
 }
 
-function claudeDesktopSnippet(): string {
+function manualSnippet(): string {
   const port = proxyStatus.value?.port ?? 0;
-  return JSON.stringify(
-    {
-      mcpServers: {
-        'mcp-manager': {
-          url: `http://localhost:${port}/mcp`,
-        },
-      },
-    },
-    null,
-    2,
-  );
+  const servers = store.servers.filter(s => s.status === 'connected');
+  const mcpServers: Record<string, { url: string }> = {};
+  for (const s of servers) {
+    mcpServers[s.name] = { url: `http://localhost:${port}/mcp/${s.id}` };
+  }
+  if (Object.keys(mcpServers).length === 0) {
+    mcpServers['your-server'] = { url: `http://localhost:${port}/mcp/<server-id>` };
+  }
+  return JSON.stringify({ mcpServers }, null, 2);
 }
 
 async function copySnippet() {
   try {
-    await navigator.clipboard.writeText(claudeDesktopSnippet());
+    await navigator.clipboard.writeText(manualSnippet());
     copied.value = true;
     setTimeout(() => (copied.value = false), 2000);
   } catch {
@@ -335,7 +333,7 @@ onUnmounted(() => {
             Proxy
           </h2>
           <p class="mb-3 text-xs text-text-secondary">
-            MCP Manager exposes all connected servers as a single MCP proxy endpoint.
+            Each connected server gets its own proxy endpoint, so AI tools see them individually.
             Use the Connected Apps toggles above, or manually add the config snippet below.
           </p>
 
@@ -364,7 +362,7 @@ onUnmounted(() => {
                 Manual config snippet:
               </p>
               <div class="relative">
-                <pre class="overflow-x-auto rounded bg-surface-2 p-3 font-mono text-xs text-text-primary">{{ claudeDesktopSnippet() }}</pre>
+                <pre class="overflow-x-auto rounded bg-surface-2 p-3 font-mono text-xs text-text-primary">{{ manualSnippet() }}</pre>
                 <button
                   class="absolute top-1.5 right-1.5 rounded bg-surface-3 px-2 py-0.5 text-[10px] text-text-muted transition hover:text-text-primary"
                   @click="copySnippet"
