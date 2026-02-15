@@ -1,13 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { ref, computed, watch } from 'vue';
 import { useServersStore } from '@/stores/servers';
 import { storeToRefs } from 'pinia';
 import ToolBrowser from '@/components/ToolBrowser.vue';
 import LogViewer from '@/components/LogViewer.vue';
 import { statusColor, statusLabel } from '@/composables/useServerStatus';
-import type { ServerStats } from '@/types/stats';
+import { useServerStats, formatClientName } from '@/composables/useServerStats';
 
 const store = useServersStore();
 const { servers, selectedServerId, lastError, oauthStatus } = storeToRefs(store);
@@ -16,141 +14,67 @@ const selectedServer = computed(() =>
   servers.value.find((s) => s.id === selectedServerId.value)
 );
 
-const serverErrorRaw = computed(() => {
-  if (!selectedServer.value) return null;
-  return lastError.value[selectedServer.value.id] ?? null;
-});
+// --- Error handling ---
 
 const serverError = computed(() => {
-  const raw = serverErrorRaw.value;
+  if (!selectedServer.value) return null;
+  const raw = lastError.value[selectedServer.value.id] ?? null;
   if (!raw) return null;
-  // Detect HTML responses (server returned a webpage, not JSON-RPC)
   if (raw.includes('<!DOCTYPE') || raw.includes('<html')) {
     return 'Server returned an HTML page instead of a JSON-RPC response. Check that the URL is an MCP endpoint (e.g. https://mcp.example.com/sse), not a documentation page.';
   }
-  // Truncate very long errors
-  if (raw.length > 300) {
-    return raw.slice(0, 300) + '...';
-  }
-  return raw;
+  return raw.length > 300 ? raw.slice(0, 300) + '...' : raw;
 });
+
+// --- OAuth ---
 
 const serverOAuthStatus = computed(() => {
   if (!selectedServer.value) return null;
   return oauthStatus.value[selectedServer.value.id] ?? null;
 });
 
-const isAuthRequired = computed(() => {
-  return serverOAuthStatus.value === 'idle'
-    || (serverError.value?.includes('Authentication required'));
-});
+const isAuthRequired = computed(() =>
+  serverOAuthStatus.value === 'idle' || serverError.value?.includes('Authentication required')
+);
 
 const isOAuthInProgress = computed(() => {
   const s = serverOAuthStatus.value;
   return s === 'discovering' || s === 'awaiting_browser' || s === 'exchanging_code';
 });
 
-const isOAuthAuthorized = computed(() => {
-  return serverOAuthStatus.value === 'authorized';
-});
+const isOAuthAuthorized = computed(() => serverOAuthStatus.value === 'authorized');
 
-const oauthProgressLabel = computed(() => {
-  switch (serverOAuthStatus.value) {
-    case 'discovering': return 'Discovering OAuth server...';
-    case 'awaiting_browser': return 'Complete sign-in in your browser...';
-    case 'exchanging_code': return 'Exchanging authorization code...';
-    default: return '';
-  }
-});
-
-const confirmingDelete = ref(false);
-const stats = ref<ServerStats | null>(null);
-
-async function fetchStats() {
-  if (!selectedServerId.value) return;
-  try {
-    stats.value = await invoke<ServerStats>('get_server_stats', { serverId: selectedServerId.value });
-  } catch {
-    stats.value = null;
-  }
-}
-
-async function resetStats() {
-  if (!selectedServerId.value) return;
-  await invoke('reset_server_stats', { serverId: selectedServerId.value });
-  stats.value = null;
-}
-
-const successRate = computed(() => {
-  if (!stats.value || stats.value.totalCalls === 0) return null;
-  return ((stats.value.totalCalls - stats.value.errors) / stats.value.totalCalls) * 100;
-});
-
-const avgLatency = computed(() => {
-  if (!stats.value || stats.value.totalCalls === 0) return null;
-  return Math.round(stats.value.totalDurationMs / stats.value.totalCalls);
-});
-
-const topClient = computed(() => {
-  if (!stats.value || Object.keys(stats.value.clients).length === 0) return null;
-  const entries = Object.entries(stats.value.clients);
-  entries.sort((a, b) => b[1] - a[1]);
-  return entries[0][0];
-});
-
-const sortedTools = computed(() => {
-  if (!stats.value) return [];
-  return Object.entries(stats.value.tools)
-    .map(([name, t]) => ({
-      name,
-      calls: t.totalCalls,
-      errors: t.errors,
-      avgLatency: t.totalCalls > 0 ? Math.round(t.totalDurationMs / t.totalCalls) : 0,
-    }))
-    .sort((a, b) => b.calls - a.calls);
-});
-
-const clientLabels: Record<string, string> = {
-  cursor: 'Cursor',
-  'claude-code': 'Claude Code',
-  'claude-desktop': 'Claude Desktop',
-  windsurf: 'Windsurf',
+const OAUTH_LABELS: Record<string, string> = {
+  discovering: 'Discovering OAuth server...',
+  awaiting_browser: 'Complete sign-in in your browser...',
+  exchanging_code: 'Exchanging authorization code...',
 };
 
-function formatClientName(id: string): string {
-  return clientLabels[id] ?? id;
-}
+const oauthProgressLabel = computed(() =>
+  OAUTH_LABELS[serverOAuthStatus.value ?? ''] ?? ''
+);
 
-const recentCalls = computed(() => {
-  if (!stats.value) return [];
-  // Newest first
-  return [...stats.value.recentCalls].reverse();
-});
+// --- Stats (composable) ---
 
-function formatTime(unixSecs: number): string {
-  return new Date(unixSecs * 1000).toLocaleTimeString();
-}
+const { stats, resetStats, successRate, avgLatency, topClient, sortedTools, recentCalls } =
+  useServerStats(selectedServerId);
 
-let unlistenStats: (() => void) | null = null;
+// --- Tabs ---
 
-onMounted(async () => {
-  fetchStats();
-  unlistenStats = await listen<{ serverId: string }>('tool-call-recorded', (event) => {
-    if (event.payload.serverId === selectedServerId.value) {
-      fetchStats();
-    }
-  });
-});
+type Tab = 'overview' | 'tools' | 'logs';
 
-onUnmounted(() => {
-  unlistenStats?.();
-});
+const TABS: Tab[] = ['overview', 'tools', 'logs'];
+const activeTab = ref<Tab>('overview');
 
-// Reset confirm state whenever the selected server changes
+// --- Local state ---
+
+const confirmingDelete = ref(false);
+
 watch(selectedServerId, () => {
   confirmingDelete.value = false;
-  fetchStats();
 });
+
+// --- Actions ---
 
 async function deleteServer() {
   if (!selectedServer.value) return;
@@ -185,16 +109,18 @@ async function toggleEnabled() {
   }
 }
 
-type Tab = 'overview' | 'tools' | 'logs';
-const activeTab = ref<Tab>('overview');
+// --- Helpers ---
 
 function formatDate(raw: string | undefined): string {
   if (!raw) return '';
-  // Backend stores Unix seconds as a plain numeric string
   const ts = Number(raw);
   const date = Number.isFinite(ts) && ts > 1e9 ? new Date(ts * 1000) : new Date(raw);
   if (isNaN(date.getTime())) return '';
   return date.toLocaleString();
+}
+
+function formatTime(unixSecs: number): string {
+  return new Date(unixSecs * 1000).toLocaleTimeString();
 }
 </script>
 
@@ -202,14 +128,10 @@ function formatDate(raw: string | undefined): string {
   <div v-if="selectedServer" class="flex h-full flex-col">
     <!-- Header -->
     <header class="flex items-center gap-3 border-b border-border px-4 py-3">
-      <span
-        class="h-2 w-2 rounded-full"
-        :class="statusColor(selectedServer.status)"
-      />
+      <span class="h-2 w-2 rounded-full" :class="statusColor(selectedServer.status)" />
       <h1 class="text-sm font-medium">{{ selectedServer.name }}</h1>
       <span class="font-mono text-xs text-text-muted">{{ selectedServer.transport }}</span>
       <div class="ml-auto flex items-center gap-2">
-        <!-- Enable/Disable toggle -->
         <button
           class="relative h-5 w-9 rounded-full transition-colors"
           :class="selectedServer.enabled ? 'bg-accent' : 'bg-surface-3'"
@@ -229,7 +151,6 @@ function formatDate(raw: string | undefined): string {
           Edit
         </router-link>
 
-        <!-- Delete (hidden for managed servers) -->
         <template v-if="!selectedServer.managed">
           <button
             v-if="!confirmingDelete"
@@ -259,7 +180,7 @@ function formatDate(raw: string | undefined): string {
     <!-- Tabs -->
     <div class="flex border-b border-border">
       <button
-        v-for="tab in (['overview', 'tools', 'logs'] as const)"
+        v-for="tab in TABS"
         :key="tab"
         class="border-b-2 px-4 py-2 text-xs transition-colors"
         :class="activeTab === tab
@@ -301,6 +222,7 @@ function formatDate(raw: string | undefined): string {
           <p class="mb-1 font-mono text-xs font-medium text-status-error">Connection Error</p>
           <p class="font-mono text-xs text-text-secondary break-all">{{ serverError }}</p>
         </div>
+
         <section class="mb-6">
           <h2 class="mb-2 font-mono text-xs font-medium tracking-wide text-text-muted uppercase">Status</h2>
           <div class="rounded border border-border bg-surface-1 p-3">
@@ -351,6 +273,7 @@ function formatDate(raw: string | undefined): string {
               <div class="text-[11px] text-text-muted">Top Client</div>
             </div>
           </div>
+
           <div v-if="sortedTools.length > 0" class="mt-3">
             <table class="w-full text-xs font-mono">
               <thead>
@@ -371,6 +294,7 @@ function formatDate(raw: string | undefined): string {
               </tbody>
             </table>
           </div>
+
           <div v-if="recentCalls.length > 0" class="mt-4">
             <h3 class="mb-1.5 text-[11px] font-medium text-text-muted">Recent Calls</h3>
             <div class="max-h-52 overflow-y-auto rounded border border-border">

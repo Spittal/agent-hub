@@ -2,7 +2,6 @@
 import { onMounted, ref } from 'vue';
 import ServerList from './components/ServerList.vue';
 import SkillList from './components/SkillList.vue';
-import StatusBar from './components/StatusBar.vue';
 import { useServersStore } from '@/stores/servers';
 import { useSkillsStore } from '@/stores/skills';
 import { useEvents } from '@/composables/useEvents';
@@ -87,6 +86,5 @@ onMounted(async () => {
         <router-view />
       </main>
     </div>
-    <StatusBar />
   </div>
 </template>
