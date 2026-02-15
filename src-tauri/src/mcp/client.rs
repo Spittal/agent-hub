@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tauri::AppHandle;
 use tokio::sync::Mutex;
@@ -13,6 +14,42 @@ use crate::mcp::types::*;
 enum Transport {
     Stdio(StdioTransport),
     Http(HttpTransport),
+}
+
+impl Transport {
+    async fn send_request(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<JsonRpcResponse, AppError> {
+        match self {
+            Transport::Stdio(t) => t.send_request(method, params).await,
+            Transport::Http(t) => t.send_request(method, params).await,
+        }
+    }
+
+    async fn send_notification(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<(), AppError> {
+        match self {
+            Transport::Stdio(t) => t.send_notification(method, params).await,
+            Transport::Http(t) => t.send_notification(method, params).await,
+        }
+    }
+
+    fn shutdown(&self) {
+        match self {
+            Transport::Stdio(t) => t.shutdown(),
+            Transport::Http(_) => {
+                // HTTP transport has no persistent process to kill.
+                // Session cleanup (DELETE) would require async; dropping the
+                // transport is sufficient — the server will expire the session.
+                tracing::debug!("HTTP transport shutdown");
+            }
+        }
+    }
 }
 
 /// MCP client wrapping either a stdio or HTTP transport.
@@ -86,6 +123,7 @@ impl McpClient {
             .map_err(|e| AppError::Protocol(format!("Failed to serialize init params: {e}")))?;
 
         let response = self
+            .transport
             .send_request("initialize", Some(params_json))
             .await?;
 
@@ -105,7 +143,8 @@ impl McpClient {
         self.server_info = Some(result.server_info);
 
         // Send initialized notification
-        self.send_notification("notifications/initialized", None)
+        self.transport
+            .send_notification("notifications/initialized", None)
             .await?;
 
         Ok(())
@@ -114,6 +153,7 @@ impl McpClient {
     /// Send tools/list and store the results.
     async fn discover_tools(&mut self) -> Result<(), AppError> {
         let response = self
+            .transport
             .send_request("tools/list", Some(serde_json::json!({})))
             .await?;
 
@@ -147,6 +187,7 @@ impl McpClient {
         });
 
         let response = self
+            .transport
             .send_request("tools/call", Some(params))
             .await?;
 
@@ -160,41 +201,9 @@ impl McpClient {
         Ok(call_result)
     }
 
-    /// Shut down the client.
+    /// Shut down the client — delegates to the underlying transport.
     pub fn shutdown(&self) {
-        match &self.transport {
-            Transport::Stdio(t) => t.shutdown(),
-            Transport::Http(_) => {
-                // HTTP transport has no persistent process to kill.
-                // Session cleanup (DELETE) would require async; dropping the
-                // transport is sufficient — the server will expire the session.
-                tracing::debug!("HTTP transport shutdown");
-            }
-        }
-    }
-
-    // -- Private helpers delegating to the active transport --
-
-    async fn send_request(
-        &self,
-        method: &str,
-        params: Option<serde_json::Value>,
-    ) -> Result<JsonRpcResponse, AppError> {
-        match &self.transport {
-            Transport::Stdio(t) => t.send_request(method, params).await,
-            Transport::Http(t) => t.send_request(method, params).await,
-        }
-    }
-
-    async fn send_notification(
-        &self,
-        method: &str,
-        params: Option<serde_json::Value>,
-    ) -> Result<(), AppError> {
-        match &self.transport {
-            Transport::Stdio(t) => t.send_notification(method, params).await,
-            Transport::Http(t) => t.send_notification(method, params).await,
-        }
+        self.transport.shutdown();
     }
 }
 
@@ -208,10 +217,10 @@ pub struct CallToolResult {
 }
 
 /// Holds active MCP client connections, keyed by server ID.
-/// This is separate from AppState because McpClient is not Send-safe
-/// behind a std::sync::Mutex (it contains tokio types).
+/// Clients are wrapped in `Arc` so callers can clone a handle and release
+/// the connections lock before performing async I/O (e.g. tool calls).
 pub struct McpConnections {
-    clients: HashMap<String, McpClient>,
+    clients: HashMap<String, Arc<McpClient>>,
 }
 
 impl McpConnections {
@@ -222,14 +231,14 @@ impl McpConnections {
     }
 
     pub fn insert(&mut self, id: String, client: McpClient) {
-        self.clients.insert(id, client);
+        self.clients.insert(id, Arc::new(client));
     }
 
-    pub fn remove(&mut self, id: &str) -> Option<McpClient> {
+    pub fn remove(&mut self, id: &str) -> Option<Arc<McpClient>> {
         self.clients.remove(id)
     }
 
-    pub fn get(&self, id: &str) -> Option<&McpClient> {
+    pub fn get(&self, id: &str) -> Option<&Arc<McpClient>> {
         self.clients.get(id)
     }
 }

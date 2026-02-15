@@ -55,7 +55,7 @@ pub async fn remove_server(
             .and_then(|s| s.managed)
             .unwrap_or(false);
         if is_managed {
-            return Err(AppError::Protocol("Cannot delete a managed server".into()));
+            return Err(AppError::Validation("Cannot delete a managed server".into()));
         }
         let len_before = state.servers.len();
         state.servers.retain(|s| s.id != id);

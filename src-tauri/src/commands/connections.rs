@@ -51,30 +51,7 @@ pub async fn connect_server(
 
     // For HTTP transport, check if we have existing OAuth tokens
     let access_token = if matches!(server_config.transport, ServerTransport::Http) {
-        let store = oauth_store.lock().await;
-        if let Some(oauth_state) = store.get(&id) {
-            if let Some(ref tokens) = oauth_state.tokens {
-                if !oauth::is_token_expired(tokens) {
-                    Some(tokens.access_token.clone())
-                } else if tokens.refresh_token.is_some() {
-                    // Try to refresh the token
-                    drop(store);
-                    match oauth::try_refresh_token(&oauth_store, &id).await {
-                        Ok(new_token) => Some(new_token),
-                        Err(e) => {
-                            tracing::warn!("Token refresh failed: {e}, will try without token");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+        resolve_access_token(&oauth_store, &id).await
     } else {
         None
     };
@@ -85,7 +62,8 @@ pub async fn connect_server(
             let command = server_config
                 .command
                 .ok_or_else(|| AppError::ConnectionFailed("No command specified".into()))?;
-            McpClient::connect_stdio(&app, &id, &command, &server_config.args, &server_config.env).await
+            McpClient::connect_stdio(&app, &id, &command, &server_config.args, &server_config.env)
+                .await
         }
         ServerTransport::Http => {
             let url = server_config
@@ -97,117 +75,29 @@ pub async fn connect_server(
 
     match client_result {
         Ok(client) => {
-            let server_name;
-
-            // Convert discovered tools to McpTool for storage in AppState
-            let tools: Vec<McpTool> = {
-                let s = state.lock().unwrap();
-                let srv = s.servers.iter().find(|s| s.id == id);
-                server_name = srv.map(|s| s.name.clone()).unwrap_or_default();
-
-                client
-                    .tools
-                    .iter()
-                    .map(|t| McpTool {
-                        name: t.name.clone(),
-                        title: t.title.clone(),
-                        description: t.description.clone(),
-                        input_schema: t.input_schema.clone(),
-                        server_id: id.clone(),
-                        server_name: server_name.clone(),
-                    })
-                    .collect()
-            };
-
-            info!(
-                "Connected to server {id} with {} tools",
-                tools.len()
-            );
-
-            // Store connection state in AppState
-            {
-                let mut s = state.lock().unwrap();
-                if let Some(server) = s.servers.iter_mut().find(|s| s.id == id) {
-                    server.status = Some(ServerStatus::Connected);
-                    server.last_connected = Some(chrono_now());
-                }
-                s.connections.insert(
-                    id.clone(),
-                    ConnectionState {
-                        tools: tools.clone(),
-                    },
-                );
-            }
-
-            // Store the live client in the connections map
-            {
-                let mut conns = connections.lock().await;
-                conns.insert(id.clone(), client);
-            }
-
-            let _ = app.emit(
-                "server-status-changed",
-                serde_json::json!({ "serverId": id, "status": "connected" }),
-            );
-            let _ = app.emit(
-                "tools-updated",
-                serde_json::json!({ "serverId": id, "tools": tools }),
-            );
-
-            crate::tray::rebuild_tray_menu(&app);
-
-            // Update integration configs so AI tools see this server
-            let proxy_state = app.state::<ProxyState>();
-            let port = proxy_state.port().await;
-            if let Err(e) =
-                crate::commands::integrations::update_all_integration_configs(&app, port)
-            {
-                tracing::warn!("Failed to update integration configs after connect: {e}");
-            }
-
+            finalize_connection(&app, &state, &connections, &id, client).await?;
             Ok(())
         }
         Err(AppError::AuthRequired(_)) => {
             info!("Server {id} requires OAuth authentication");
-
-            {
-                let mut s = state.lock().unwrap();
-                if let Some(server) = s.servers.iter_mut().find(|s| s.id == id) {
-                    server.status = Some(ServerStatus::Error);
-                }
-            }
-
-            let _ = app.emit(
-                "server-status-changed",
-                serde_json::json!({ "serverId": id, "status": "error", "error": "Authentication required. Click Authorize to sign in." }),
+            mark_server_error(
+                &app,
+                &state,
+                &id,
+                "Authentication required. Click Authorize to sign in.",
             );
-
             let _ = app.emit(
                 "oauth-required",
                 serde_json::json!({ "serverId": id }),
             );
-
-            crate::tray::rebuild_tray_menu(&app);
-
-            Err(AppError::AuthRequired("Authentication required. Click Authorize to sign in.".into()))
+            Err(AppError::AuthRequired(
+                "Authentication required. Click Authorize to sign in.".into(),
+            ))
         }
         Err(e) => {
             error!("Failed to connect to server {id}: {e}");
-
-            {
-                let mut s = state.lock().unwrap();
-                if let Some(server) = s.servers.iter_mut().find(|s| s.id == id) {
-                    server.status = Some(ServerStatus::Error);
-                }
-            }
-
             let error_message = e.to_string();
-
-            let _ = app.emit(
-                "server-status-changed",
-                serde_json::json!({ "serverId": id, "status": "error", "error": error_message }),
-            );
-
+            mark_server_error(&app, &state, &id, &error_message);
             let _ = app.emit(
                 "server-error",
                 serde_json::json!({
@@ -216,9 +106,6 @@ pub async fn connect_server(
                     "details": format!("Connection to server {id} failed: {error_message}")
                 }),
             );
-
-            crate::tray::rebuild_tray_menu(&app);
-
             Err(e)
         }
     }
@@ -270,6 +157,8 @@ pub async fn disconnect_server(
     Ok(())
 }
 
+// --- Private helpers ---
+
 /// Temporary struct to hold server config data extracted from the lock.
 struct ServerConnectConfig {
     transport: ServerTransport,
@@ -278,6 +167,122 @@ struct ServerConnectConfig {
     env: HashMap<String, String>,
     url: Option<String>,
     headers: HashMap<String, String>,
+}
+
+/// Try to get a valid access token from stored OAuth state, refreshing if needed.
+async fn resolve_access_token(oauth_store: &SharedOAuthStore, id: &str) -> Option<String> {
+    let store = oauth_store.lock().await;
+    let oauth_state = store.get(id)?;
+    let tokens = oauth_state.tokens.as_ref()?;
+
+    if !oauth::is_token_expired(tokens) {
+        return Some(tokens.access_token.clone());
+    }
+
+    if tokens.refresh_token.is_some() {
+        drop(store);
+        match oauth::try_refresh_token(oauth_store, id).await {
+            Ok(new_token) => Some(new_token),
+            Err(e) => {
+                tracing::warn!("Token refresh failed: {e}, will try without token");
+                None
+            }
+        }
+    } else {
+        None
+    }
+}
+
+/// Mark a server as errored: update state, emit events, rebuild tray.
+fn mark_server_error(app: &AppHandle, state: &SharedState, id: &str, error: &str) {
+    {
+        let mut s = state.lock().unwrap();
+        if let Some(server) = s.servers.iter_mut().find(|s| s.id == id) {
+            server.status = Some(ServerStatus::Error);
+        }
+    }
+    let _ = app.emit(
+        "server-status-changed",
+        serde_json::json!({ "serverId": id, "status": "error", "error": error }),
+    );
+    crate::tray::rebuild_tray_menu(app);
+}
+
+/// Finalize a successful connection: store tools, update state, emit events, sync integrations.
+async fn finalize_connection(
+    app: &AppHandle,
+    state: &SharedState,
+    connections: &SharedConnections,
+    id: &str,
+    client: McpClient,
+) -> Result<(), AppError> {
+    let server_name;
+
+    // Convert discovered tools to McpTool for storage in AppState
+    let tools: Vec<McpTool> = {
+        let s = state.lock().unwrap();
+        let srv = s.servers.iter().find(|s| s.id == id);
+        server_name = srv.map(|s| s.name.clone()).unwrap_or_default();
+
+        client
+            .tools
+            .iter()
+            .map(|t| McpTool {
+                name: t.name.clone(),
+                title: t.title.clone(),
+                description: t.description.clone(),
+                input_schema: t.input_schema.clone(),
+                server_id: id.to_string(),
+                server_name: server_name.clone(),
+            })
+            .collect()
+    };
+
+    info!(
+        "Connected to server {id} with {} tools",
+        tools.len()
+    );
+
+    // Store connection state in AppState
+    {
+        let mut s = state.lock().unwrap();
+        if let Some(server) = s.servers.iter_mut().find(|s| s.id == id) {
+            server.status = Some(ServerStatus::Connected);
+            server.last_connected = Some(chrono_now());
+        }
+        s.connections.insert(
+            id.to_string(),
+            ConnectionState {
+                tools: tools.clone(),
+            },
+        );
+    }
+
+    // Store the live client in the connections map
+    {
+        let mut conns = connections.lock().await;
+        conns.insert(id.to_string(), client);
+    }
+
+    let _ = app.emit(
+        "server-status-changed",
+        serde_json::json!({ "serverId": id, "status": "connected" }),
+    );
+    let _ = app.emit(
+        "tools-updated",
+        serde_json::json!({ "serverId": id, "tools": tools }),
+    );
+
+    crate::tray::rebuild_tray_menu(app);
+
+    // Update integration configs so AI tools see this server
+    let proxy_state = app.state::<ProxyState>();
+    let port = proxy_state.port().await;
+    if let Err(e) = crate::commands::integrations::update_all_integration_configs(app, port) {
+        tracing::warn!("Failed to update integration configs after connect: {e}");
+    }
+
+    Ok(())
 }
 
 fn chrono_now() -> String {

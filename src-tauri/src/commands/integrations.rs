@@ -170,6 +170,53 @@ fn parse_existing_servers(path: &Path) -> Vec<ExistingMcpServer> {
     existing
 }
 
+/// Parse a JSON MCP server entry into a ServerConfig for import.
+fn server_config_from_json(key: &str, value: &serde_json::Value) -> ServerConfig {
+    let has_url = value.get("url").and_then(|v| v.as_str()).is_some();
+
+    ServerConfig {
+        id: Uuid::new_v4().to_string(),
+        name: key.to_string(),
+        enabled: true,
+        transport: if has_url {
+            ServerTransport::Http
+        } else {
+            ServerTransport::Stdio
+        },
+        command: value
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        args: value.get("args").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        }),
+        env: value.get("env").and_then(|v| v.as_object()).map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect::<HashMap<String, String>>()
+        }),
+        url: if has_url {
+            value.get("url").and_then(|v| v.as_str()).map(String::from)
+        } else {
+            None
+        },
+        headers: value
+            .get("headers")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect::<HashMap<String, String>>()
+            }),
+        tags: None,
+        status: Some(ServerStatus::Disconnected),
+        last_connected: None,
+        managed: None,
+    }
+}
+
 fn home_dir() -> Result<PathBuf, AppError> {
     dirs::home_dir().ok_or_else(|| {
         AppError::Io(std::io::Error::new(
@@ -262,47 +309,7 @@ pub async fn enable_integration(
                 continue;
             }
 
-            let has_url = value.get("url").and_then(|v| v.as_str()).is_some();
-
-            let server = ServerConfig {
-                id: Uuid::new_v4().to_string(),
-                name: key.clone(),
-                enabled: true,
-                transport: if has_url {
-                    ServerTransport::Http
-                } else {
-                    ServerTransport::Stdio
-                },
-                command: value
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-                args: value.get("args").and_then(|v| v.as_array()).map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                }),
-                env: value.get("env").and_then(|v| v.as_object()).map(|obj| {
-                    obj.iter()
-                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                        .collect::<HashMap<String, String>>()
-                }),
-                url: if has_url {
-                    value.get("url").and_then(|v| v.as_str()).map(String::from)
-                } else {
-                    None
-                },
-                headers: value.get("headers").and_then(|v| v.as_object()).map(|obj| {
-                    obj.iter()
-                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                        .collect::<HashMap<String, String>>()
-                }),
-                tags: None,
-                status: Some(ServerStatus::Disconnected),
-                last_connected: None,
-                managed: None,
-            };
-
+            let server = server_config_from_json(key, value);
             info!("Imported MCP server '{}' from {}", key, tool.name);
             s.servers.push(server);
             imported_count += 1;

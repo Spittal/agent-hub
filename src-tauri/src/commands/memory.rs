@@ -158,6 +158,25 @@ async fn list_pulled_ollama_models() -> Vec<String> {
         .collect()
 }
 
+#[tauri::command]
+pub async fn delete_ollama_model(model: String) -> Result<(), AppError> {
+    info!("Deleting Ollama model {model}");
+    let output = tokio::process::Command::new("docker")
+        .args(["exec", "mcp-manager-ollama", "ollama", "rm", &model])
+        .output()
+        .await
+        .map_err(|e| AppError::ConnectionFailed(format!("Failed to delete model {model}: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::ConnectionFailed(format!(
+            "Failed to delete model {model}: {stderr}"
+        )));
+    }
+    info!("Deleted Ollama model {model}");
+    Ok(())
+}
+
 fn find_memory_server(servers: &[ServerConfig]) -> Option<&ServerConfig> {
     servers
         .iter()
@@ -244,7 +263,7 @@ pub async fn save_embedding_config_cmd(
     input: SaveEmbeddingConfigInput,
 ) -> Result<(), AppError> {
     if input.config.dimensions == 0 {
-        return Err(AppError::Protocol("Dimensions must be greater than 0".into()));
+        return Err(AppError::Validation("Dimensions must be greater than 0".into()));
     }
 
     // Save config to state + persistence
@@ -287,7 +306,7 @@ pub async fn enable_memory(
     let embedding_config = {
         let s = state.lock().unwrap();
         if find_memory_server(&s.servers).is_some() {
-            return Err(AppError::Protocol("Memory is already enabled".into()));
+            return Err(AppError::Validation("Memory is already enabled".into()));
         }
         s.embedding_config.clone()
     };
@@ -402,7 +421,7 @@ pub async fn disable_memory(
     let (provider, server_id) = {
         let s = state.lock().unwrap();
         let server = find_memory_server(&s.servers)
-            .ok_or_else(|| AppError::Protocol("Memory is not enabled".into()))?;
+            .ok_or_else(|| AppError::Validation("Memory is not enabled".into()))?;
         (s.embedding_config.provider.clone(), server.id.clone())
     };
 

@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 use tokio::time::Instant;
 use tracing::{error, info};
 
-use crate::mcp::client::{McpConnections, SharedConnections};
+use crate::mcp::client::SharedConnections;
 use crate::persistence::save_stats;
 use crate::state::SharedState;
 use crate::stats::{unix_now, StatsStore, ToolCallEntry, ToolStats};
@@ -229,17 +229,20 @@ async fn handle_tools_call(
         .cloned()
         .unwrap_or(serde_json::json!({}));
 
-    // Call the tool on this specific server
+    // Clone an Arc handle and drop the lock before doing async I/O.
+    // This avoids blocking all other proxy requests while a tool call is in flight.
     let connections = state.app_handle.state::<SharedConnections>();
-    let conns: tokio::sync::MutexGuard<'_, McpConnections> = connections.lock().await;
-    let client = match conns.get(server_id) {
-        Some(c) => c,
-        None => {
-            return make_error_response(
-                id,
-                -32602,
-                &format!("Server '{server_name}' is not connected"),
-            );
+    let client = {
+        let conns = connections.lock().await;
+        match conns.get(server_id).cloned() {
+            Some(c) => c,
+            None => {
+                return make_error_response(
+                    id,
+                    -32602,
+                    &format!("Server '{server_name}' is not connected"),
+                );
+            }
         }
     };
 

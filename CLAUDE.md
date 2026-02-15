@@ -167,9 +167,14 @@ mcp-manager/
 │   │   │   ├── client.rs   # MCP client (JSON-RPC over stdio/HTTP)
 │   │   │   ├── transport.rs # Transport abstractions
 │   │   │   └── types.rs    # MCP protocol types
-│   │   ├── state.rs        # Application state definitions
-│   │   ├── error.rs        # Error types (use thiserror)
-│   │   └── lib.rs          # Tauri app entry point
+│   │   ├── state/           # Application state (split by domain)
+│   │   │   ├── mod.rs       # AppState, ConnectionState, SharedState + re-exports
+│   │   │   ├── server.rs    # ServerConfig, ServerTransport, ServerStatus, McpTool
+│   │   │   ├── oauth.rs     # OAuthTokens, OAuthState, SharedOAuthStore
+│   │   │   └── embedding.rs # EmbeddingConfig, EmbeddingProvider
+│   │   ├── stats.rs         # Per-server tool usage stats (StatsStore)
+│   │   ├── error.rs         # Error types (use thiserror)
+│   │   └── lib.rs           # Tauri app entry point
 │   ├── capabilities/       # Security permissions
 │   ├── Cargo.toml
 │   └── tauri.conf.json
@@ -246,6 +251,13 @@ pnpm tauri add fs
 
 5. **Security-first OAuth**: OAuth tokens stored in OS keychain, never in plaintext config. OAuth redirect handled via localhost callback server.
 
+## Code Quality Philosophy
+
+Write Vue that would make Evan You happy. Write Rust that would make one of the top Rust maintainers happy.
+
+- **Vue**: Lean `<script setup>`, small focused components, composables for shared logic, computed over watchers, no prop drilling — lift state or provide/inject.
+- **Rust**: Clear ownership, minimal lock scope, no mutex held across `.await`, domain-split modules, thin command handlers that delegate to helpers, generic utilities over copy-paste.
+
 ## Coding Conventions
 
 ### Rust
@@ -254,9 +266,13 @@ pnpm tauri add fs
 - All commands are async unless trivially simple
 - State accessed via `State<'_, Mutex<AppState>>` pattern
 - Use `std::sync::Mutex` for serializable state (`AppState`), `tokio::sync::Mutex` only when holding lock across `.await` points (`McpConnections`, `OAuthStore`)
+- **Never hold a mutex across async I/O** — clone an `Arc` handle and drop the guard before `.await`. `McpConnections` stores `Arc<McpClient>` for this reason.
 - Never use bare `.unwrap()` on fallible operations — use `.expect("reason")` or proper error handling
-- Keep `AppError` variants minimal — only add variants that are actively used by commands
+- Keep `AppError` variants minimal — only add variants that are actively used by commands. Use `Validation` for input validation, `Protocol` for MCP protocol issues.
 - Remove dead code promptly; run `cargo check` to verify zero warnings before committing
+- **Decompose large functions**: Extract helpers (`resolve_access_token`, `mark_server_error`, `finalize_connection`) so command handlers read as a sequence of clear steps
+- **DRY persistence**: Use generic `store_get<T>` / `store_set<T>` helpers — never copy-paste store boilerplate
+- **State split by domain**: `state/server.rs`, `state/oauth.rs`, `state/embedding.rs` — AppState in `state/mod.rs` composes them
 - **Serde camelCase for IPC structs**: Tauri only auto-converts snake_case → camelCase for command *arguments* (JS → Rust). Return values use serde as-is. Any struct returned to the frontend **must** have `#[serde(rename_all = "camelCase")]` so field names match the TypeScript interfaces. Without this, the JS side sees `undefined` for multi-word fields (e.g., `existing_servers` vs `existingServers`), causing silent runtime errors.
 
 ### TypeScript/Vue
@@ -265,9 +281,10 @@ pnpm tauri add fs
 - Tauri IPC calls wrapped in composables (`src/composables/`)
 - Strong typing — define interfaces for all IPC payloads in `src/types/`
 - Always `unlisten()` event listeners on component unmount
-- Extract shared UI logic into components (`src/components/`) — e.g., `ServerForm.vue` for add/edit views
+- Extract shared UI logic into components (`src/components/`) — e.g., `ServerForm.vue` for add/edit, `ToggleCard.vue` for consistent toggle patterns
 - Extract shared helper functions into composables — e.g., `useServerStatus.ts` for status display logic
 - Keep frontend types in sync with Rust structs — don't define fields the backend never sends
+- Split large views into sub-components when they exceed ~200 lines — e.g., `SettingsView.vue` delegates to `SettingsIntegrations.vue`, `SettingsProxy.vue`, `SettingsMemory.vue`
 
 ### Naming
 - Rust crate: `mcp-manager` (binary) / commands in snake_case

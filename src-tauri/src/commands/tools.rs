@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use tauri::State;
 
 use crate::error::AppError;
-use crate::mcp::client::{CallToolResult, SharedConnections};
+use crate::mcp::client::{CallToolResult, McpClient, SharedConnections};
 use crate::state::{McpTool, SharedState};
 
 #[tauri::command]
@@ -38,9 +40,13 @@ pub async fn call_tool(
     tool_name: String,
     arguments: serde_json::Value,
 ) -> Result<CallToolResult, AppError> {
-    let conns = connections.lock().await;
-    let client = conns
-        .get(&server_id)
-        .ok_or_else(|| AppError::ServerNotFound(server_id.clone()))?;
+    // Clone the Arc handle and drop the lock before async I/O
+    let client: Arc<McpClient> = {
+        let conns = connections.lock().await;
+        conns
+            .get(&server_id)
+            .cloned()
+            .ok_or_else(|| AppError::ServerNotFound(server_id.clone()))?
+    };
     client.call_tool(&tool_name, arguments).await
 }

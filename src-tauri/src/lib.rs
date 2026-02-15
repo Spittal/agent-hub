@@ -86,6 +86,7 @@ pub fn run() {
             commands::memory::disable_memory,
             commands::memory::get_embedding_config,
             commands::memory::save_embedding_config_cmd,
+            commands::memory::delete_ollama_model,
             commands::stats::get_server_stats,
             commands::stats::reset_server_stats,
         ])
