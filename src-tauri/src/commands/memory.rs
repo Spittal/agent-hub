@@ -399,6 +399,7 @@ pub async fn enable_memory(
         status: Some(ServerStatus::Disconnected),
         last_connected: None,
         managed: Some(true),
+        registry_name: None,
     };
 
     {

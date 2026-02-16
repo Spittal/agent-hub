@@ -18,6 +18,7 @@ export interface ServerConfig {
   status?: ServerStatus;
   lastConnected?: string;
   managed?: boolean;
+  registryName?: string;
 }
 
 export type ServerConfigInput = Omit<ServerConfig, 'id' | 'status' | 'lastConnected'>;

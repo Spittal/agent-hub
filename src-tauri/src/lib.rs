@@ -7,6 +7,7 @@ mod state;
 mod tray;
 
 use mcp::client::McpConnections;
+use state::registry::MarketplaceCache;
 use state::{AppState, OAuthStore};
 use stats::StatsStore;
 use std::sync::{Arc, Mutex};
@@ -46,6 +47,7 @@ pub fn run() {
 
             let stats_store: StatsStore = Arc::new(RwLock::new(stats));
             app.manage(stats_store);
+            app.manage(MarketplaceCache::new());
 
             // Start the MCP proxy server
             let proxy_state = mcp::proxy::ProxyState::new();
@@ -95,6 +97,10 @@ pub fn run() {
             commands::memory::delete_ollama_model,
             commands::stats::get_server_stats,
             commands::stats::reset_server_stats,
+            commands::registry::search_registry,
+            commands::registry::get_registry_server,
+            commands::registry::install_registry_server,
+            commands::registry::check_runtime_deps,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

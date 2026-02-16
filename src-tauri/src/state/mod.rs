@@ -1,5 +1,7 @@
 mod embedding;
 mod oauth;
+mod providers;
+pub mod registry;
 mod server;
 
 pub use embedding::*;

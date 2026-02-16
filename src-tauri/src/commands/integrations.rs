@@ -214,6 +214,7 @@ fn server_config_from_json(key: &str, value: &serde_json::Value) -> ServerConfig
         status: Some(ServerStatus::Disconnected),
         last_connected: None,
         managed: None,
+        registry_name: None,
     }
 }
 
