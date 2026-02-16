@@ -5,17 +5,12 @@ use crate::error::AppError;
 use crate::persistence::save_servers;
 use crate::state::{ServerConfig, ServerConfigInput, ServerStatus, SharedState};
 
-#[tauri::command]
-pub async fn list_servers(state: State<'_, SharedState>) -> Result<Vec<ServerConfig>, AppError> {
-    let state = state.lock().unwrap();
-    Ok(state.servers.clone())
-}
-
-#[tauri::command]
-pub async fn add_server(
-    app: AppHandle,
-    state: State<'_, SharedState>,
+/// Core server-creation logic, reusable by both the `add_server` command and registry install.
+pub fn add_server_inner(
+    app: &AppHandle,
+    state: &SharedState,
     input: ServerConfigInput,
+    registry_name: Option<String>,
 ) -> Result<ServerConfig, AppError> {
     let server = ServerConfig {
         id: Uuid::new_v4().to_string(),
@@ -31,15 +26,31 @@ pub async fn add_server(
         status: Some(ServerStatus::Disconnected),
         last_connected: None,
         managed: None,
+        registry_name,
     };
 
     {
         let mut state = state.lock().unwrap();
         state.servers.push(server.clone());
-        save_servers(&app, &state.servers);
+        save_servers(app, &state.servers);
     }
-    crate::tray::rebuild_tray_menu(&app);
+    crate::tray::rebuild_tray_menu(app);
     Ok(server)
+}
+
+#[tauri::command]
+pub async fn list_servers(state: State<'_, SharedState>) -> Result<Vec<ServerConfig>, AppError> {
+    let state = state.lock().unwrap();
+    Ok(state.servers.clone())
+}
+
+#[tauri::command]
+pub async fn add_server(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    input: ServerConfigInput,
+) -> Result<ServerConfig, AppError> {
+    add_server_inner(&app, &state, input, None)
 }
 
 #[tauri::command]
@@ -93,6 +104,7 @@ pub async fn update_server(
         server.headers = input.headers;
         server.enabled = input.enabled;
         server.tags = input.tags;
+        // Preserve registry_name — don't overwrite from input
 
         let updated = server.clone();
         save_servers(&app, &s.servers);

@@ -53,9 +53,9 @@ onMounted(async () => {
             </button>
             <router-link
               to="/add"
-              class="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-3 hover:text-text-primary"
+              class="rounded bg-accent px-2 py-0.5 text-[11px] font-medium text-white transition-colors hover:bg-accent-hover"
             >
-              <span class="text-sm leading-none">+</span>
+              Add
             </router-link>
           </div>
           <ServerList v-show="!serversCollapsed" />
@@ -117,8 +117,8 @@ onMounted(async () => {
           </router-link>
           <router-link
             to="/settings"
-            class="flex items-center gap-2 px-3 py-2 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
-            active-class="bg-surface-2 text-text-secondary"
+            class="flex items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-surface-2"
+            :class="$route.path === '/settings' ? 'text-text-primary' : 'text-text-muted hover:text-text-secondary'"
           >
             Settings
           </router-link>

@@ -21,7 +21,6 @@ interface ServerErrorPayload {
 
 interface ToolsUpdatedPayload {
   serverId: string;
-  serverName: string;
   tools: McpTool[];
 }
 
@@ -65,7 +64,6 @@ export function useEvents() {
       await listen<ToolsUpdatedPayload>('tools-updated', (event) => {
         toolsStore.setTools(
           event.payload.serverId,
-          event.payload.serverName,
           event.payload.tools
         );
       })

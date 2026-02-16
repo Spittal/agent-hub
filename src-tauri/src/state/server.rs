@@ -26,6 +26,8 @@ pub struct ServerConfig {
     pub last_connected: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub managed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

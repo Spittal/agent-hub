@@ -17,6 +17,7 @@ const initialValues = ref<{
   args: string;
   url: string;
   headers: string;
+  env: Record<string, string>;
 }>();
 
 onMounted(async () => {
@@ -37,6 +38,7 @@ onMounted(async () => {
     headers: server.headers
       ? Object.entries(server.headers).map(([k, v]) => `${k}: ${v}`).join('\n')
       : '',
+    env: server.env ?? {},
   };
 });
 
@@ -51,7 +53,7 @@ function parseHeaders(raw: string): Record<string, string> {
   return parsed;
 }
 
-async function onSubmit(values: { name: string; transport: 'stdio' | 'http'; command: string; args: string; url: string; headers: string }) {
+async function onSubmit(values: { name: string; transport: 'stdio' | 'http'; command: string; args: string; url: string; headers: string; env: Record<string, string> }) {
   try {
     await store.updateServer(serverId, {
       name: values.name.trim(),
@@ -61,6 +63,7 @@ async function onSubmit(values: { name: string; transport: 'stdio' | 'http'; com
         ? {
             command: values.command.trim(),
             args: values.args.split(/\s+/).filter(Boolean),
+            env: Object.keys(values.env).length > 0 ? values.env : undefined,
           }
         : {
             url: values.url.trim(),

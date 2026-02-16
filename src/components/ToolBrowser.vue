@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useToolsStore } from '@/stores/tools';
 import { storeToRefs } from 'pinia';
 import type { McpTool } from '@/types/mcp';
@@ -11,6 +11,12 @@ const props = defineProps<{
 const toolsStore = useToolsStore();
 const { searchQuery } = storeToRefs(toolsStore);
 const selectedTool = ref<McpTool | null>(null);
+
+onMounted(() => {
+  if (props.serverId) {
+    toolsStore.fetchTools(props.serverId);
+  }
+});
 
 const displayedTools = computed(() => {
   let result = toolsStore.filteredTools;

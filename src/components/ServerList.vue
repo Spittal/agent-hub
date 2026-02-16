@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRouter, useRoute } from 'vue-router';
 import { useServersStore } from '@/stores/servers';
 import { useSkillsStore } from '@/stores/skills';
 import { storeToRefs } from 'pinia';
 import { statusColor } from '@/composables/useServerStatus';
 
 const router = useRouter();
+const route = useRoute();
 const store = useServersStore();
 const skillsStore = useSkillsStore();
 const { servers, selectedServerId } = storeToRefs(store);
@@ -72,7 +73,7 @@ async function deleteServer(id: string) {
       :key="server.id"
       class="group flex cursor-pointer items-center gap-2 border-b border-border/50 px-3 py-2 transition-colors hover:bg-surface-2"
       :class="[
-        selectedServerId === server.id ? 'bg-surface-2' : '',
+        selectedServerId === server.id && route.path === '/' ? 'bg-surface-2' : '',
         !server.enabled ? 'opacity-50' : '',
       ]"
       @click="onSelect(server.id)"

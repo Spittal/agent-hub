@@ -9,6 +9,7 @@ mod tray;
 
 use commands::status::SharedSystem;
 use mcp::client::McpConnections;
+use state::registry::MarketplaceCache;
 use state::{AppState, OAuthStore};
 use stats::StatsStore;
 use std::sync::{Arc, Mutex};
@@ -49,6 +50,7 @@ pub fn run() {
 
             let stats_store: StatsStore = Arc::new(RwLock::new(stats));
             app.manage(stats_store);
+            app.manage(MarketplaceCache::new());
 
             // Start the MCP proxy server
             let proxy_state = mcp::proxy::ProxyState::new();
@@ -102,6 +104,10 @@ pub fn run() {
             commands::memories::search_memories,
             commands::memories::get_memory,
             commands::memories::check_memory_health,
+            commands::registry::search_registry,
+            commands::registry::get_registry_server,
+            commands::registry::install_registry_server,
+            commands::registry::check_runtime_deps,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

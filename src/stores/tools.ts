@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import type { McpTool } from '@/types/mcp';
 
 export const useToolsStore = defineStore('tools', () => {
@@ -17,11 +18,11 @@ export const useToolsStore = defineStore('tools', () => {
     );
   });
 
-  function setTools(serverId: string, serverName: string, newTools: McpTool[]) {
+  function setTools(serverId: string, newTools: McpTool[]) {
     // Remove old tools for this server, add new ones
     tools.value = [
       ...tools.value.filter(t => t.serverId !== serverId),
-      ...newTools.map(t => ({ ...t, serverId, serverName })),
+      ...newTools,
     ];
   }
 
@@ -29,5 +30,14 @@ export const useToolsStore = defineStore('tools', () => {
     tools.value = tools.value.filter(t => t.serverId !== serverId);
   }
 
-  return { tools, searchQuery, filteredTools, setTools, clearToolsForServer };
+  async function fetchTools(serverId: string) {
+    try {
+      const serverTools = await invoke<McpTool[]>('list_tools', { id: serverId });
+      setTools(serverId, serverTools);
+    } catch {
+      // Server not connected or not found — leave store as-is
+    }
+  }
+
+  return { tools, searchQuery, filteredTools, setTools, clearToolsForServer, fetchTools };
 });
