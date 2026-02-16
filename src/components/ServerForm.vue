@@ -2,6 +2,11 @@
 import { ref, computed, watch } from 'vue';
 import type { ServerTransport } from '@/types/server';
 
+interface EnvEntry {
+  key: string;
+  value: string;
+}
+
 interface FormValues {
   name: string;
   transport: ServerTransport;
@@ -9,6 +14,7 @@ interface FormValues {
   args: string;
   url: string;
   headers: string;
+  env: Record<string, string>;
 }
 
 const props = defineProps<{
@@ -19,6 +25,7 @@ const props = defineProps<{
     args?: string;
     url?: string;
     headers?: string;
+    env?: Record<string, string>;
   };
   submitLabel: string;
 }>();
@@ -34,6 +41,30 @@ const args = ref(props.initial?.args ?? '');
 const url = ref(props.initial?.url ?? '');
 const headers = ref(props.initial?.headers ?? '');
 
+function envToEntries(env?: Record<string, string>): EnvEntry[] {
+  if (!env || Object.keys(env).length === 0) return [];
+  return Object.entries(env).map(([key, value]) => ({ key, value }));
+}
+
+function entriesToEnv(entries: EnvEntry[]): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const e of entries) {
+    const k = e.key.trim();
+    if (k) env[k] = e.value;
+  }
+  return env;
+}
+
+const envEntries = ref<EnvEntry[]>(envToEntries(props.initial?.env));
+
+function addEnvVar() {
+  envEntries.value.push({ key: '', value: '' });
+}
+
+function removeEnvVar(index: number) {
+  envEntries.value.splice(index, 1);
+}
+
 // Update refs when initial values change (e.g. after async load)
 watch(() => props.initial, (val) => {
   if (!val) return;
@@ -43,6 +74,7 @@ watch(() => props.initial, (val) => {
   if (val.args !== undefined) args.value = val.args;
   if (val.url !== undefined) url.value = val.url;
   if (val.headers !== undefined) headers.value = val.headers;
+  if (val.env !== undefined) envEntries.value = envToEntries(val.env);
 });
 
 const urlWarning = computed(() => {
@@ -66,6 +98,7 @@ function onSubmit() {
     args: args.value,
     url: url.value,
     headers: headers.value,
+    env: entriesToEnv(envEntries.value),
   });
 }
 </script>
@@ -131,6 +164,44 @@ function onSubmit() {
             class="w-full rounded border border-border bg-surface-1 px-3 py-2 font-mono text-xs text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent"
           />
         </div>
+        <div>
+          <label class="mb-1 block font-mono text-xs text-text-muted uppercase">Environment Variables</label>
+          <div v-if="envEntries.length > 0" class="mb-2 space-y-2">
+            <div v-for="(entry, i) in envEntries" :key="i" class="flex items-center gap-2">
+              <input
+                v-model="entry.key"
+                type="text"
+                placeholder="KEY"
+                class="w-2/5 rounded border border-border bg-surface-1 px-2 py-1.5 font-mono text-xs text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent"
+              />
+              <span class="text-xs text-text-muted">=</span>
+              <input
+                v-model="entry.value"
+                type="password"
+                placeholder="value"
+                class="min-w-0 flex-1 rounded border border-border bg-surface-1 px-2 py-1.5 font-mono text-xs text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent"
+              />
+              <button
+                type="button"
+                class="shrink-0 rounded p-1 text-text-muted transition-colors hover:bg-status-error/10 hover:text-status-error"
+                title="Remove variable"
+                @click="removeEnvVar(i)"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            class="rounded border border-dashed border-border px-3 py-1.5 text-xs text-text-muted transition-colors hover:border-border-active hover:text-text-secondary"
+            @click="addEnvVar"
+          >
+            + Add variable
+          </button>
+          <p class="mt-1 text-[11px] text-text-muted">API keys and secrets needed by the server process.</p>
+        </div>
       </template>
 
       <!-- HTTP fields -->
@@ -165,12 +236,6 @@ function onSubmit() {
         >
           {{ submitLabel }}
         </button>
-        <router-link
-          to="/"
-          class="rounded bg-surface-3 px-4 py-2 text-xs text-text-secondary transition-colors hover:bg-surface-2"
-        >
-          Cancel
-        </router-link>
         <slot name="actions" />
       </div>
 
