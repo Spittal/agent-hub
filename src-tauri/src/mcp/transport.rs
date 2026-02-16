@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -6,13 +6,16 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::error::AppError;
 use crate::mcp::types::{JsonRpcRequest, JsonRpcResponse};
 
 /// A pending request awaiting a response from the MCP server.
 type PendingRequest = oneshot::Sender<JsonRpcResponse>;
+
+/// Max number of recent error-level stderr lines to keep for error context.
+const STDERR_BUFFER_SIZE: usize = 10;
 
 /// Handle for writing to a running MCP server's stdin and tracking pending requests.
 pub struct StdioTransport {
@@ -21,6 +24,8 @@ pub struct StdioTransport {
     stdin_tx: mpsc::Sender<String>,
     /// Map of request ID -> oneshot sender for response correlation.
     pending: Arc<Mutex<HashMap<u64, PendingRequest>>>,
+    /// Recent error-level stderr lines, used to enrich transport error messages.
+    recent_stderr: Arc<std::sync::Mutex<VecDeque<String>>>,
 }
 
 impl StdioTransport {
@@ -68,6 +73,10 @@ impl StdioTransport {
         let pending: Arc<Mutex<HashMap<u64, PendingRequest>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_clone = pending.clone();
+
+        let recent_stderr: Arc<std::sync::Mutex<VecDeque<String>>> =
+            Arc::new(std::sync::Mutex::new(VecDeque::new()));
+        let stderr_buf_clone = recent_stderr.clone();
 
         // Channel for notifications (server-initiated messages that don't match a pending request)
         let (notification_tx, _notification_rx) = mpsc::channel::<JsonRpcResponse>(64);
@@ -119,11 +128,22 @@ impl StdioTransport {
                     CommandEvent::Stderr(bytes) => {
                         let text = String::from_utf8_lossy(&bytes).trim().to_string();
                         if !text.is_empty() {
-                            // Python sends all logging to stderr — detect the
+                            // Many servers send all logging to stderr — detect the
                             // actual level from the message content instead of
                             // treating everything as an error.
                             let level = detect_log_level(&text);
-                            warn!("MCP stderr: {text}");
+                            match level {
+                                "error" => {
+                                    error!("MCP stderr: {text}");
+                                    let mut buf = stderr_buf_clone.lock().unwrap();
+                                    buf.push_back(text.clone());
+                                    if buf.len() > STDERR_BUFFER_SIZE {
+                                        buf.pop_front();
+                                    }
+                                }
+                                "info" => info!("MCP stderr: {text}"),
+                                _ => warn!("MCP stderr: {text}"),
+                            }
                             let _ = log_app.emit(
                                 "server-log",
                                 serde_json::json!({
@@ -136,6 +156,11 @@ impl StdioTransport {
                     }
                     CommandEvent::Terminated(status) => {
                         debug!("MCP process terminated: {status:?}");
+                        // Drop all pending request senders so callers get an
+                        // immediate RecvError instead of waiting for the 60s
+                        // timeout. This lets stderr_enriched_error() surface
+                        // the real crash reason right away.
+                        pending_clone.lock().await.clear();
                         let _ = log_app.emit(
                             "server-log",
                             serde_json::json!({
@@ -155,6 +180,7 @@ impl StdioTransport {
             next_id: AtomicU64::new(1),
             stdin_tx,
             pending,
+            recent_stderr,
         })
     }
 
@@ -186,7 +212,7 @@ impl StdioTransport {
         self.stdin_tx
             .send(format!("{line}\n"))
             .await
-            .map_err(|_| AppError::Transport("Stdin channel closed".to_string()))?;
+            .map_err(|_| self.stderr_enriched_error("Server process exited unexpectedly"))?;
 
         debug!("Sent request id={id} method={method}");
 
@@ -195,7 +221,7 @@ impl StdioTransport {
             .map_err(|_| {
                 AppError::Transport(format!("Timeout waiting for response to {method} (id={id})"))
             })?
-            .map_err(|_| AppError::Transport("Response channel dropped".to_string()))?;
+            .map_err(|_| self.stderr_enriched_error("Server process exited unexpectedly"))?;
 
         if let Some(err) = &response.error {
             return Err(AppError::Protocol(format!(
@@ -226,11 +252,23 @@ impl StdioTransport {
         self.stdin_tx
             .send(format!("{line}\n"))
             .await
-            .map_err(|_| AppError::Transport("Stdin channel closed".to_string()))?;
+            .map_err(|_| self.stderr_enriched_error("Server process exited unexpectedly"))?;
 
         debug!("Sent notification method={method}");
 
         Ok(())
+    }
+
+    /// Build a transport error enriched with recent stderr output.
+    /// When a server process crashes, the generic "channel closed" message is useless —
+    /// the real reason (e.g. "FATHOM_API_KEY environment variable is not set") is in stderr.
+    fn stderr_enriched_error(&self, fallback: &str) -> AppError {
+        let buf = self.recent_stderr.lock().unwrap();
+        if buf.is_empty() {
+            return AppError::Transport(fallback.to_string());
+        }
+        let stderr_lines: Vec<&str> = buf.iter().map(|s| s.as_str()).collect();
+        AppError::Transport(stderr_lines.join("\n"))
     }
 
     /// Shut down the transport — closes stdin which triggers child process kill.
@@ -242,15 +280,24 @@ impl StdioTransport {
     }
 }
 
-/// Detect the log level from stderr content. Python sends all logging to
-/// stderr, so we parse the message to find the actual level keyword.
+/// Detect the log level from stderr content. Many servers (Python, Node, Go)
+/// send all logging to stderr, so we parse the message to find the actual level.
 fn detect_log_level(text: &str) -> &'static str {
     let upper = text.to_uppercase();
-    if upper.contains(" ERROR ") || upper.contains("TRACEBACK") {
+    if upper.contains(" ERROR ")
+        || upper.contains("TRACEBACK")
+        || upper.contains("ERROR:")
+        || upper.starts_with("ERROR ")
+        || upper.contains("THROW ERR")
+    {
         "error"
     } else if upper.contains("WARNING") || upper.contains("USERWARNING") {
         "warn"
-    } else if upper.contains(" INFO ") || upper.contains(" DEBUG ") {
+    } else if upper.contains(" INFO ")
+        || upper.contains("LEVEL=INFO")
+        || upper.starts_with("INFO ")
+        || upper.contains(" DEBUG ")
+    {
         "info"
     } else {
         // Default stderr to warn — it's not stdout, but not necessarily an error
