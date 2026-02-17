@@ -164,6 +164,27 @@ async fn stop_container(name: &str) {
         .await;
 }
 
+/// Wait for the MCP SSE endpoint to respond to HTTP requests (up to `timeout_secs`).
+/// A TCP port check isn't sufficient — the Python app inside Docker may not be serving yet.
+async fn wait_for_sse_ready(url: &str, timeout_secs: u64) -> Result<(), AppError> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .expect("failed to build reqwest client");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    while std::time::Instant::now() < deadline {
+        // A successful GET to the SSE endpoint means the server is ready.
+        // We don't need to read the stream — just getting a response is enough.
+        if client.get(url).send().await.is_ok() {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    Err(AppError::ConnectionFailed(format!(
+        "Memory MCP server at {url} did not become ready within {timeout_secs}s"
+    )))
+}
+
 /// Pull an Ollama model inside the container. Fast no-op if already pulled.
 async fn pull_ollama_model(app: &AppHandle, model: &str) -> Result<(), AppError> {
     emit_progress(app, &format!("Pulling model {model} (cached after first run)..."));
@@ -517,6 +538,11 @@ pub async fn save_embedding_config_cmd(
         return Err(AppError::Validation("Dimensions must be greater than 0".into()));
     }
 
+    let previous_provider = {
+        let s = state.lock().unwrap();
+        s.embedding_config.provider.clone()
+    };
+
     // Save config to state + persistence
     {
         let mut s = state.lock().unwrap();
@@ -530,6 +556,16 @@ pub async fn save_embedding_config_cmd(
             if !key.is_empty() {
                 save_openai_api_key(&app, key);
             }
+        }
+    }
+
+    // Stop Ollama container if switching away from Ollama
+    if previous_provider == EmbeddingProvider::Ollama
+        && input.config.provider != EmbeddingProvider::Ollama
+    {
+        if is_container_running(OLLAMA_CONTAINER).await {
+            info!("Stopping Ollama container (switched to {:?})", input.config.provider);
+            stop_container(OLLAMA_CONTAINER).await;
         }
     }
 
@@ -666,6 +702,10 @@ pub async fn enable_memory(
         "sse".into(),
     ]);
     ensure_container(&app, MCP_CONTAINER, &mcp_args).await?;
+
+    // Wait for the MCP SSE endpoint to actually respond (not just TCP open)
+    emit_progress(&app, "Waiting for memory MCP server to be ready...");
+    wait_for_sse_ready("http://localhost:9050/sse", 30).await?;
 
     emit_progress(&app, "Configuring memory server...");
 

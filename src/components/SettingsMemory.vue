@@ -2,6 +2,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { storeToRefs } from 'pinia';
 import { useServersStore } from '@/stores/servers';
 import type { MemoryStatus } from '@/types/memory';
 import type { EmbeddingConfigStatus, EmbeddingProvider, EmbeddingModelInfo } from '@/types/embedding';
@@ -9,6 +11,7 @@ import { OLLAMA_MODELS, OPENAI_MODELS } from '@/types/embedding';
 import ToggleCard from './ToggleCard.vue';
 
 const store = useServersStore();
+const { servers, lastError } = storeToRefs(store);
 
 // Memory status
 const status = ref<MemoryStatus | null>(null);
@@ -18,9 +21,9 @@ const progress = ref<string | null>(null);
 
 // Embedding config
 const embeddingStatus = ref<EmbeddingConfigStatus | null>(null);
-const provider = ref<EmbeddingProvider>('ollama');
-const model = ref('mxbai-embed-large');
-const dimensions = ref(1024);
+const provider = ref<EmbeddingProvider>('openai');
+const model = ref('text-embedding-3-small');
+const dimensions = ref(1536);
 const customModel = ref(false);
 const customName = ref('');
 const customDims = ref(512);
@@ -71,16 +74,30 @@ const description = computed(() => {
   return 'Shared long-term memory across all connected AI tools. Uses local Ollama models for embeddings — no API keys needed. Requires Docker.';
 });
 
+const memoryServer = computed(() =>
+  servers.value.find(s => s.managed && s.name === 'Memory')
+);
+
+const connectionError = computed(() => {
+  if (!memoryServer.value) return null;
+  const raw = lastError.value[memoryServer.value.id] ?? null;
+  if (!raw) return null;
+  return raw.length > 300 ? raw.slice(0, 300) + '...' : raw;
+});
+
 const memorySubtitle = computed<string | undefined>(() => {
   if (toggling.value && progress.value) return undefined; // handled by slot
+  if (retrying.value) return 'Retrying...';
   if (status.value?.enabled && status.value.serverStatus === 'connected') return 'Connected';
   if (status.value?.enabled && status.value.serverStatus === 'connecting') return 'Connecting...';
+  if (status.value?.enabled && status.value.serverStatus === 'error') return 'Error';
   if (status.value?.enabled) return 'Enabled';
   return undefined;
 });
 
 const memorySubtitleClass = computed(() => {
-  if (status.value?.serverStatus === 'connecting') return 'text-status-connecting';
+  if (status.value?.serverStatus === 'error') return 'text-status-error';
+  if (status.value?.serverStatus === 'connecting' || retrying.value) return 'text-status-connecting';
   return 'text-text-muted';
 });
 
@@ -135,6 +152,18 @@ async function toggle() {
   } finally {
     toggling.value = false;
     progress.value = null;
+  }
+}
+
+const retrying = ref(false);
+
+async function retryConnection() {
+  if (!memoryServer.value) return;
+  retrying.value = true;
+  try {
+    await store.connectServer(memoryServer.value.id);
+  } finally {
+    retrying.value = false;
   }
 }
 
@@ -254,6 +283,23 @@ onUnmounted(() => {
         </div>
       </ToggleCard>
 
+      <!-- Connection error with retry -->
+      <div v-if="connectionError && status?.enabled && !toggling" class="rounded border border-status-error/30 bg-status-error/10 p-3">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0 flex-1">
+            <p class="mb-1 text-xs font-medium text-status-error">Connection Failed</p>
+            <p class="whitespace-pre-line font-mono text-[11px] text-text-secondary break-all">{{ connectionError }}</p>
+          </div>
+          <button
+            class="shrink-0 rounded bg-surface-3 px-3 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-50"
+            :disabled="retrying"
+            @click="retryConnection"
+          >
+            {{ retrying ? 'Retrying...' : 'Retry' }}
+          </button>
+        </div>
+      </div>
+
       <!-- Embedding config panel -->
       <div class="rounded border border-border bg-surface-1">
         <div class="px-3 py-2.5">
@@ -264,15 +310,6 @@ onUnmounted(() => {
         <div class="flex border-t border-border/50">
           <button
             class="flex-1 py-1.5 text-[11px] font-medium transition-colors"
-            :class="provider === 'ollama'
-              ? 'bg-surface-2 text-text-primary'
-              : 'text-text-muted hover:text-text-secondary'"
-            @click="switchProvider('ollama')"
-          >
-            Ollama
-          </button>
-          <button
-            class="flex-1 py-1.5 text-[11px] font-medium transition-colors border-l border-border/50"
             :class="provider === 'openai'
               ? 'bg-surface-2 text-text-primary'
               : 'text-text-muted hover:text-text-secondary'"
@@ -280,9 +317,23 @@ onUnmounted(() => {
           >
             OpenAI
           </button>
+          <button
+            class="flex-1 py-1.5 text-[11px] font-medium transition-colors border-l border-border/50"
+            :class="provider === 'ollama'
+              ? 'bg-surface-2 text-text-primary'
+              : 'text-text-muted hover:text-text-secondary'"
+            @click="switchProvider('ollama')"
+          >
+            Ollama
+          </button>
         </div>
 
         <div class="border-t border-border/50 px-3 py-2.5 space-y-2">
+          <!-- Ollama quality note -->
+          <div v-if="provider === 'ollama'" class="rounded bg-surface-2 px-2.5 py-2 text-[11px] text-text-secondary">
+            In our testing, local Ollama embeddings haven't performed as well as OpenAI for memory retrieval. Our testing is limited though, and we'll update this guidance as we gather more data.
+          </div>
+
           <!-- Model list -->
           <div class="space-y-1">
             <div
@@ -387,9 +438,9 @@ onUnmounted(() => {
               <span v-if="embeddingStatus?.hasOpenaiKey" class="text-status-connected">&#10003; Key saved</span>
               <span v-else class="text-text-muted">No API key saved</span>
               <span class="text-text-muted">&middot;</span>
-              <a href="https://platform.openai.com/api-keys" target="_blank" class="text-accent hover:underline">
+              <button class="text-accent hover:underline" @click="openUrl('https://platform.openai.com/api-keys')">
                 Get an API key
-              </a>
+              </button>
             </div>
           </div>
 

@@ -18,9 +18,9 @@ pub enum EmbeddingProvider {
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
-            provider: EmbeddingProvider::Ollama,
-            model: "mxbai-embed-large".into(),
-            dimensions: 1024,
+            provider: EmbeddingProvider::Openai,
+            model: "text-embedding-3-small".into(),
+            dimensions: 1536,
         }
     }
 }
