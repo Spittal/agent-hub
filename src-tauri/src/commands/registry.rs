@@ -6,7 +6,7 @@ use crate::error::AppError;
 use crate::state::registry::{
     MarketplaceCache, MarketplaceServerDetail, RegistrySearchResult, RuntimeDeps,
 };
-use crate::state::{ServerConfig, ServerConfigInput, ServerTransport, SharedState};
+use crate::state::{ServerConfig, ServerConfigInput, SharedState};
 
 #[tauri::command]
 pub async fn search_registry(
@@ -82,15 +82,16 @@ pub async fn install_registry_server(
 
     // Start with non-placeholder defaults, then overlay user-provided values.
     let mut env = config.default_env();
-
     if let Some(user_env) = env_vars {
         env.extend(user_env);
     }
 
+    // Build as stdio — add_server_inner will auto-detect proxy wrappers
+    // (e.g. npx mcp-remote) and rewrite to HTTP transport.
     let input = ServerConfigInput {
         name: display_name,
         enabled: true,
-        transport: ServerTransport::Stdio,
+        transport: crate::state::ServerTransport::Stdio,
         command: Some(config.command),
         args: Some(config.args),
         env: if env.is_empty() { None } else { Some(env) },
@@ -100,6 +101,14 @@ pub async fn install_registry_server(
     };
 
     crate::commands::servers::add_server_inner(&app, &state, input, Some(id))
+}
+
+#[tauri::command]
+pub async fn fetch_readme(
+    cache: State<'_, MarketplaceCache>,
+    repository_url: String,
+) -> Result<Option<String>, AppError> {
+    Ok(cache.fetch_readme(&repository_url).await)
 }
 
 #[tauri::command]

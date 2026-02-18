@@ -6,7 +6,7 @@ use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 use tracing::{error, info};
 
-use crate::state::{EmbeddingConfig, ServerConfig};
+use crate::state::{EmbeddingConfig, OAuthState, ServerConfig};
 use crate::stats::ServerStats;
 
 const STORE_FILE: &str = "config.json";
@@ -15,6 +15,8 @@ const INTEGRATIONS_KEY: &str = "enabled_integrations";
 const STATS_KEY: &str = "stats";
 const EMBEDDING_CONFIG_KEY: &str = "embedding_config";
 const OPENAI_API_KEY_KEY: &str = "openai_api_key";
+const OAUTH_STORE_KEY: &str = "oauth_store";
+const TOOL_DISCOVERY_KEY: &str = "tool_discovery_enabled";
 
 // --- Generic helpers ---
 
@@ -81,4 +83,20 @@ pub fn load_openai_api_key(app: &AppHandle) -> Option<String> {
 
 pub fn save_openai_api_key(app: &AppHandle, key: &str) {
     store_set(app, OPENAI_API_KEY_KEY, &key.to_string());
+}
+
+pub fn load_oauth_store(app: &AppHandle) -> HashMap<String, OAuthState> {
+    store_get(app, OAUTH_STORE_KEY).unwrap_or_default()
+}
+
+pub fn save_oauth_store(app: &AppHandle, entries: &HashMap<String, OAuthState>) {
+    store_set(app, OAUTH_STORE_KEY, entries);
+}
+
+pub fn load_tool_discovery(app: &AppHandle) -> bool {
+    store_get(app, TOOL_DISCOVERY_KEY).unwrap_or(false)
+}
+
+pub fn save_tool_discovery(app: &AppHandle, enabled: bool) {
+    store_set(app, TOOL_DISCOVERY_KEY, &enabled);
 }

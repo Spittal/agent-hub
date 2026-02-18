@@ -54,6 +54,11 @@ const router = createRouter({
       redirect: '/add',
     },
     {
+      path: '/marketplace/:id',
+      name: 'marketplace-detail',
+      component: () => import('./views/MarketplaceDetailView.vue'),
+    },
+    {
       path: '/settings',
       name: 'settings',
       component: () => import('./views/SettingsView.vue'),

@@ -29,6 +29,7 @@ export interface MarketplaceServerDetail {
   args: string[];
   envVars: MarketplaceEnvVar[];
   runtime?: string;
+  transportTypes: string[];
 }
 
 export interface MarketplaceEnvVar {

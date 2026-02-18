@@ -33,20 +33,25 @@ pub fn run() {
             let enabled_integrations = persistence::load_enabled_integrations(app.handle());
             let stats = persistence::load_stats(app.handle());
             let embedding_config = persistence::load_embedding_config(app.handle());
+            let oauth_entries = persistence::load_oauth_store(app.handle());
             info!(
-                "Loaded {} servers, {} enabled integrations, {} server stats from persistent store",
+                "Loaded {} servers, {} enabled integrations, {} server stats, {} OAuth entries from persistent store",
                 servers.len(),
                 enabled_integrations.len(),
-                stats.len()
+                stats.len(),
+                oauth_entries.len(),
             );
+
+            let tool_discovery_enabled = persistence::load_tool_discovery(app.handle());
 
             let mut app_state = AppState::new();
             app_state.servers = servers;
             app_state.enabled_integrations = enabled_integrations;
             app_state.embedding_config = embedding_config;
+            app_state.tool_discovery_enabled = tool_discovery_enabled;
             app.manage(Mutex::new(app_state));
             app.manage(tokio::sync::Mutex::new(McpConnections::new()));
-            app.manage(tokio::sync::Mutex::new(OAuthStore::new()));
+            app.manage(tokio::sync::Mutex::new(OAuthStore::from_entries(oauth_entries)));
             app.manage(Mutex::new(sysinfo::System::new()) as SharedSystem);
 
             let stats_store: StatsStore = Arc::new(RwLock::new(stats));
@@ -113,6 +118,9 @@ pub fn run() {
             commands::data_management::export_memories,
             commands::data_management::import_memories,
             commands::data_management::format_memory_data,
+            commands::registry::fetch_readme,
+            commands::discovery::get_discovery_mode,
+            commands::discovery::set_discovery_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
