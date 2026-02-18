@@ -1,5 +1,6 @@
 import { onMounted, onUnmounted } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { useLogsStore, type LogEntry } from '@/stores/logs';
 
 interface ServerLogPayload {
@@ -22,6 +23,18 @@ export function useServerLogs() {
         message: event.payload.message,
       });
     });
+
+    // Drain logs that were buffered before we started listening
+    // (e.g. HTTP server connections during reconnect_on_startup)
+    const buffered = await invoke<ServerLogPayload[]>('drain_log_buffer');
+    for (const entry of buffered) {
+      logsStore.addLog({
+        timestamp: new Date().toISOString(),
+        serverId: entry.serverId,
+        level: entry.level,
+        message: entry.message,
+      });
+    }
   });
 
   onUnmounted(() => {

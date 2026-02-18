@@ -81,6 +81,7 @@ pub fn run() {
             commands::servers::update_server,
             commands::connections::connect_server,
             commands::connections::disconnect_server,
+            commands::connections::drain_log_buffer,
             commands::tools::list_tools,
             commands::tools::list_all_tools,
             commands::tools::call_tool,

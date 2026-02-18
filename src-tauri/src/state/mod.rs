@@ -11,12 +11,23 @@ pub use server::*;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+/// A log entry buffered before the frontend is ready.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BufferedLog {
+    pub server_id: String,
+    pub level: String,
+    pub message: String,
+}
+
 pub struct AppState {
     pub servers: Vec<ServerConfig>,
     pub connections: HashMap<String, ConnectionState>,
     /// IDs of AI tool integrations that MCP Manager is configured to manage.
     pub enabled_integrations: Vec<String>,
     pub embedding_config: EmbeddingConfig,
+    /// Logs emitted before the frontend event listener is ready.
+    pub log_buffer: Vec<BufferedLog>,
 }
 
 pub struct ConnectionState {
@@ -30,6 +41,7 @@ impl AppState {
             connections: HashMap::new(),
             enabled_integrations: Vec::new(),
             embedding_config: EmbeddingConfig::default(),
+            log_buffer: Vec::new(),
         }
     }
 }

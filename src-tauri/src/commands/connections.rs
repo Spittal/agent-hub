@@ -423,7 +423,9 @@ async fn finalize_connection(
     Ok(())
 }
 
-/// Emit a `server-log` event for HTTP transport servers (stdio servers emit their own via stderr).
+/// Emit a `server-log` event and buffer it in AppState for the frontend to drain later.
+/// HTTP servers only get logs during connection, so if the frontend isn't mounted yet
+/// the events are lost. The buffer ensures they can be retrieved after mount.
 fn emit_server_log(app: &AppHandle, server_id: &str, level: &str, message: &str) {
     let _ = app.emit(
         "server-log",
@@ -433,6 +435,24 @@ fn emit_server_log(app: &AppHandle, server_id: &str, level: &str, message: &str)
             "message": message,
         }),
     );
+
+    // Also buffer for frontend that may not be listening yet
+    let state = app.state::<SharedState>();
+    let mut s = state.lock().unwrap();
+    s.log_buffer.push(crate::state::BufferedLog {
+        server_id: server_id.to_string(),
+        level: level.to_string(),
+        message: message.to_string(),
+    });
+}
+
+/// Drain buffered logs — called by the frontend after it sets up the event listener.
+#[tauri::command]
+pub async fn drain_log_buffer(
+    state: State<'_, SharedState>,
+) -> Result<Vec<crate::state::BufferedLog>, AppError> {
+    let mut s = state.lock().unwrap();
+    Ok(std::mem::take(&mut s.log_buffer))
 }
 
 fn chrono_now() -> String {
