@@ -32,11 +32,12 @@ onMounted(async () => {
 
 <template>
   <div class="flex h-full flex-col">
+    <!-- Titlebar drag region — spans full window width -->
+    <div data-tauri-drag-region class="h-8 shrink-0" />
+
     <div class="flex min-h-0 flex-1">
       <!-- Sidebar -->
       <aside class="flex w-60 flex-col border-r border-border bg-surface-1">
-        <!-- Titlebar spacer for macOS traffic light buttons -->
-        <div data-tauri-drag-region class="h-8 shrink-0" />
 
         <div class="min-h-0 flex-1 overflow-y-auto">
           <!-- SERVERS section -->
@@ -126,12 +127,8 @@ onMounted(async () => {
       </aside>
 
       <!-- Main content -->
-      <main class="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-0">
-        <!-- Titlebar spacer for macOS (matches sidebar) -->
-        <div data-tauri-drag-region class="h-8 shrink-0" />
-        <div class="min-h-0 flex-1">
-          <router-view />
-        </div>
+      <main class="min-h-0 min-w-0 flex-1 overflow-hidden bg-surface-0">
+        <router-view />
       </main>
     </div>
   </div>
