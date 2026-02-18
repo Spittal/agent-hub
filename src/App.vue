@@ -126,10 +126,12 @@ onMounted(async () => {
       </aside>
 
       <!-- Main content -->
-      <main class="flex min-w-0 flex-1 flex-col bg-surface-0">
+      <main class="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-0">
         <!-- Titlebar spacer for macOS (matches sidebar) -->
         <div data-tauri-drag-region class="h-8 shrink-0" />
-        <router-view />
+        <div class="min-h-0 flex-1">
+          <router-view />
+        </div>
       </main>
     </div>
   </div>

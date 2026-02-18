@@ -10,14 +10,16 @@ export const useMemoriesStore = defineStore('memories', () => {
   const query = ref('');
   const filters = ref<SearchFilters>({});
   const offset = ref(0);
+  const hasMore = ref(false);
   const selectedMemory = ref<MemoryItem | null>(null);
 
   function reset() {
     items.value = [];
     total.value = 0;
     offset.value = 0;
+    hasMore.value = false;
     error.value = null;
   }
 
-  return { items, total, loading, error, query, filters, offset, selectedMemory, reset };
+  return { items, total, loading, error, query, filters, offset, hasMore, selectedMemory, reset };
 });

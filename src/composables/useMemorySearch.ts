@@ -2,6 +2,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { useMemoriesStore } from '@/stores/memories';
 import type { MemorySearchResult } from '@/types/memory';
 
+const PAGE_SIZE = 50;
+
 export function useMemorySearch() {
   const store = useMemoriesStore();
 
@@ -10,10 +12,11 @@ export function useMemorySearch() {
     store.error = null;
 
     try {
+      const currentOffset = append ? store.offset : 0;
       const result = await invoke<MemorySearchResult>('search_memories', {
         text: store.query,
-        limit: 20,
-        offset: append ? store.offset : 0,
+        limit: PAGE_SIZE,
+        offset: currentOffset,
         memoryType: store.filters.memoryType ?? null,
         topics: store.filters.topics?.length ? store.filters.topics : null,
         entities: store.filters.entities?.length ? store.filters.entities : null,
@@ -27,8 +30,11 @@ export function useMemorySearch() {
       } else {
         store.items = result.memories;
       }
+      // Sort newest first — the API doesn't guarantee order
+      store.items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       store.total = result.total;
-      store.offset = result.nextOffset ?? store.items.length;
+      store.hasMore = result.memories.length === PAGE_SIZE;
+      store.offset = store.items.length;
     } catch (e) {
       store.error = String(e);
     } finally {

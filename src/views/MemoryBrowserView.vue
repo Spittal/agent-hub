@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, watch } from 'vue';
+import { ref, onMounted, onUnmounted, watch } from 'vue';
 import { useMemoriesStore } from '@/stores/memories';
 import { useMemorySearch } from '@/composables/useMemorySearch';
 import type { MemoryItem } from '@/types/memory';
@@ -8,7 +8,15 @@ const store = useMemoriesStore();
 const { search, addTopicFilter, addEntityFilter, clearFilters } = useMemorySearch();
 
 let debounceTimer: ReturnType<typeof setTimeout>;
-let pollTimer: ReturnType<typeof setInterval>;
+const scrollContainer = ref<HTMLElement | null>(null);
+
+function onScroll(e: Event) {
+  if (!store.hasMore || store.loading) return;
+  const el = e.target as HTMLElement;
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 100) {
+    search(true);
+  }
+}
 
 function onQueryInput() {
   clearTimeout(debounceTimer);
@@ -75,13 +83,9 @@ watch(() => store.filters, () => search(), { deep: true });
 
 onMounted(() => {
   search();
-  pollTimer = setInterval(() => {
-    if (!store.loading) search();
-  }, 5000);
 });
 
 onUnmounted(() => {
-  clearInterval(pollTimer);
   clearTimeout(debounceTimer);
 });
 </script>
@@ -147,7 +151,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Results -->
-      <div class="flex-1 overflow-y-auto">
+      <div ref="scrollContainer" class="flex-1 overflow-y-auto" @scroll="onScroll">
         <div v-if="store.loading && !store.items.length" class="py-12 text-center text-xs text-text-muted">
           Loading...
         </div>
@@ -158,7 +162,7 @@ onUnmounted(() => {
           No memories found.
         </div>
         <div v-else class="p-3 space-y-1.5">
-          <div class="text-[10px] text-text-muted mb-1">{{ store.total }} memories</div>
+          <div class="text-[10px] text-text-muted mb-1">showing {{ store.items.length }}{{ store.hasMore ? '+' : '' }} memories</div>
           <!-- Memory cards -->
           <button
             v-for="m in store.items"
@@ -200,15 +204,13 @@ onUnmounted(() => {
             </div>
           </button>
 
-          <!-- Load more -->
-          <button
-            v-if="store.items.length < store.total"
-            class="w-full rounded border border-border bg-surface-1 py-2 text-[11px] text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
-            :disabled="store.loading"
-            @click="search(true)"
+          <!-- Infinite scroll loading indicator -->
+          <div
+            v-if="store.loading && store.items.length"
+            class="py-3 text-center text-[11px] text-text-muted"
           >
-            Load more
-          </button>
+            Loading...
+          </div>
         </div>
       </div>
     </div>
