@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "MCP Manager",
-        "width": 960,
-        "height": 640,
+        "width": 1200,
+        "height": 800,
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
