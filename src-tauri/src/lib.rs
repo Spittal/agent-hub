@@ -32,11 +32,13 @@ pub fn run() {
             let enabled_integrations = persistence::load_enabled_integrations(app.handle());
             let stats = persistence::load_stats(app.handle());
             let embedding_config = persistence::load_embedding_config(app.handle());
+            let oauth_entries = persistence::load_oauth_store(app.handle());
             info!(
-                "Loaded {} servers, {} enabled integrations, {} server stats from persistent store",
+                "Loaded {} servers, {} enabled integrations, {} server stats, {} OAuth entries from persistent store",
                 servers.len(),
                 enabled_integrations.len(),
-                stats.len()
+                stats.len(),
+                oauth_entries.len(),
             );
 
             let mut app_state = AppState::new();
@@ -45,7 +47,7 @@ pub fn run() {
             app_state.embedding_config = embedding_config;
             app.manage(Mutex::new(app_state));
             app.manage(tokio::sync::Mutex::new(McpConnections::new()));
-            app.manage(tokio::sync::Mutex::new(OAuthStore::new()));
+            app.manage(tokio::sync::Mutex::new(OAuthStore::from_entries(oauth_entries)));
             app.manage(Mutex::new(sysinfo::System::new()) as SharedSystem);
 
             let stats_store: StatsStore = Arc::new(RwLock::new(stats));

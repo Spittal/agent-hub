@@ -384,6 +384,7 @@ pub fn is_token_expired(tokens: &OAuthTokens) -> bool {
 pub async fn try_refresh_token(
     oauth_store: &SharedOAuthStore,
     server_id: &str,
+    app: &tauri::AppHandle,
 ) -> Result<String, AppError> {
     let (metadata, client_id, client_secret, refresh_tok) = {
         let store = oauth_store.lock().await;
@@ -416,12 +417,13 @@ pub async fn try_refresh_token(
 
     let new_access = new_tokens.access_token.clone();
 
-    // Update the store
+    // Update the store and persist to disk
     {
         let mut store = oauth_store.lock().await;
         if let Some(oauth_state) = store.entries_mut().get_mut(server_id) {
             oauth_state.tokens = Some(new_tokens);
         }
+        crate::persistence::save_oauth_store(app, store.entries());
     }
 
     Ok(new_access)

@@ -3,7 +3,30 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::persistence::save_servers;
-use crate::state::{ServerConfig, ServerConfigInput, ServerStatus, SharedState};
+use crate::state::registry::detect_http_proxy;
+use crate::state::{ServerConfig, ServerConfigInput, ServerStatus, ServerTransport, SharedState};
+
+/// If the input is a stdio config wrapping an HTTP proxy (e.g. `npx mcp-remote`),
+/// rewrite it to use HTTP transport directly.
+fn maybe_rewrite_proxy(mut input: ServerConfigInput) -> ServerConfigInput {
+    if !matches!(input.transport, ServerTransport::Stdio) {
+        return input;
+    }
+    let command = input.command.as_deref().unwrap_or_default();
+    let args = input.args.as_deref().unwrap_or_default();
+    if let Some(target) = detect_http_proxy(command, args) {
+        input.transport = ServerTransport::Http;
+        input.command = None;
+        input.args = None;
+        input.url = Some(target.url);
+        if !target.headers.is_empty() {
+            let mut headers = input.headers.unwrap_or_default();
+            headers.extend(target.headers);
+            input.headers = Some(headers);
+        }
+    }
+    input
+}
 
 /// Core server-creation logic, reusable by both the `add_server` command and registry install.
 pub fn add_server_inner(
@@ -12,6 +35,7 @@ pub fn add_server_inner(
     input: ServerConfigInput,
     registry_name: Option<String>,
 ) -> Result<ServerConfig, AppError> {
+    let input = maybe_rewrite_proxy(input);
     let server = ServerConfig {
         id: Uuid::new_v4().to_string(),
         name: input.name,
@@ -87,6 +111,7 @@ pub async fn update_server(
     id: String,
     input: ServerConfigInput,
 ) -> Result<ServerConfig, AppError> {
+    let input = maybe_rewrite_proxy(input);
     let updated = {
         let mut s = state.lock().unwrap();
         let server = s

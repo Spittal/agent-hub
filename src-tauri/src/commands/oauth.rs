@@ -121,7 +121,7 @@ pub async fn start_oauth_flow(
     )
     .await?;
 
-    // 11. Store in OAuthStore
+    // 11. Store in OAuthStore and persist to disk
     {
         let mut store = oauth_store.lock().await;
         store.set(
@@ -133,6 +133,7 @@ pub async fn start_oauth_flow(
                 tokens: Some(tokens.clone()),
             },
         );
+        crate::persistence::save_oauth_store(&app, store.entries());
     }
 
     let _ = app.emit(
@@ -242,11 +243,13 @@ pub async fn start_oauth_flow(
 
 #[tauri::command]
 pub async fn clear_oauth_tokens(
+    app: AppHandle,
     oauth_store: State<'_, SharedOAuthStore>,
     id: String,
 ) -> Result<(), AppError> {
     let mut store = oauth_store.lock().await;
     store.remove(&id);
+    crate::persistence::save_oauth_store(&app, store.entries());
     info!("Cleared OAuth tokens for server {id}");
     Ok(())
 }

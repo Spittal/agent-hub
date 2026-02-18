@@ -42,10 +42,12 @@ pub struct OAuthStore {
 }
 
 impl OAuthStore {
-    pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-        }
+    pub fn from_entries(entries: HashMap<String, OAuthState>) -> Self {
+        Self { entries }
+    }
+
+    pub fn entries(&self) -> &HashMap<String, OAuthState> {
+        &self.entries
     }
 
     pub fn get(&self, server_id: &str) -> Option<&OAuthState> {

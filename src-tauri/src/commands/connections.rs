@@ -53,7 +53,7 @@ pub async fn connect_server(
 
     // For HTTP transport, check if we have existing OAuth tokens
     let access_token = if matches!(server_config.transport, ServerTransport::Http) {
-        resolve_access_token(&oauth_store, &id).await
+        resolve_access_token(&oauth_store, &id, &app).await
     } else {
         None
     };
@@ -245,7 +245,7 @@ pub async fn reconnect_on_startup(app: AppHandle) {
         );
 
         let access_token = if matches!(config.transport, ServerTransport::Http) {
-            resolve_access_token(&oauth_store, &id).await
+            resolve_access_token(&oauth_store, &id, &app).await
         } else {
             None
         };
@@ -308,7 +308,11 @@ struct ServerConnectConfig {
 }
 
 /// Try to get a valid access token from stored OAuth state, refreshing if needed.
-async fn resolve_access_token(oauth_store: &SharedOAuthStore, id: &str) -> Option<String> {
+async fn resolve_access_token(
+    oauth_store: &SharedOAuthStore,
+    id: &str,
+    app: &AppHandle,
+) -> Option<String> {
     let store = oauth_store.lock().await;
     let oauth_state = store.get(id)?;
     let tokens = oauth_state.tokens.as_ref()?;
@@ -319,7 +323,7 @@ async fn resolve_access_token(oauth_store: &SharedOAuthStore, id: &str) -> Optio
 
     if tokens.refresh_token.is_some() {
         drop(store);
-        match oauth::try_refresh_token(oauth_store, id).await {
+        match oauth::try_refresh_token(oauth_store, id, app).await {
             Ok(new_token) => Some(new_token),
             Err(e) => {
                 tracing::warn!("Token refresh failed: {e}, will try without token");

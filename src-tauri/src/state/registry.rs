@@ -40,6 +40,65 @@ pub struct InstallConfig {
     pub env: HashMap<String, String>,
 }
 
+/// Known stdio-to-HTTP proxy package names. These tools wrap a remote HTTP
+/// endpoint as a stdio process — unnecessary when the client natively supports
+/// HTTP transport.
+const PROXY_PACKAGES: &[&str] = &[
+    "mcp-remote",
+    "mcp-proxy",
+    "@anthropic/mcp-proxy",
+    "@anthropic-ai/mcp-proxy",
+    "@punkpeye/mcp-proxy",
+    "supergateway",
+    "mcp-gateway",
+];
+
+/// Extracted HTTP target from a stdio-to-HTTP proxy wrapper.
+pub struct HttpTarget {
+    pub url: String,
+    pub headers: HashMap<String, String>,
+}
+
+/// Detect stdio-to-HTTP proxy wrappers and extract the target URL + headers.
+///
+/// Works on any (command, args) pair — used by both marketplace install configs
+/// and manually-created server configs.
+pub fn detect_http_proxy(command: &str, args: &[String]) -> Option<HttpTarget> {
+    // Only applies to npx/uvx runner commands
+    if !matches!(command, "npx" | "uvx") {
+        return None;
+    }
+
+    // Check if any arg matches a known proxy package name
+    let has_proxy = args
+        .iter()
+        .any(|arg| PROXY_PACKAGES.iter().any(|&pkg| arg == pkg));
+    if !has_proxy {
+        return None;
+    }
+
+    // Extract URL: first arg starting with http:// or https://
+    let url = args
+        .iter()
+        .find(|a| a.starts_with("http://") || a.starts_with("https://"))?
+        .clone();
+
+    // Extract --header KEY:VALUE pairs (mcp-remote style)
+    let mut headers = HashMap::new();
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--header" || arg == "-h" {
+            if let Some(val) = iter.next() {
+                if let Some((k, v)) = val.split_once(':') {
+                    headers.insert(k.trim().to_string(), v.trim().to_string());
+                }
+            }
+        }
+    }
+
+    Some(HttpTarget { url, headers })
+}
+
 impl InstallConfig {
     /// Derive the package registry type from the command.
     pub fn runtime(&self) -> Option<&'static str> {
@@ -72,6 +131,17 @@ impl InstallConfig {
             .filter(|(_, v)| !is_placeholder(v))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
+    }
+
+    /// If this config is a stdio-to-HTTP proxy wrapper (e.g. `npx mcp-remote`),
+    /// extract the target URL and any headers so we can connect directly via HTTP.
+    pub fn extract_http_target(&self) -> Option<HttpTarget> {
+        detect_http_proxy(&self.command, &self.args)
+    }
+
+    /// Returns `true` if this config wraps a stdio-to-HTTP proxy.
+    pub fn is_http_proxy(&self) -> bool {
+        self.extract_http_target().is_some()
     }
 }
 
@@ -168,13 +238,25 @@ pub struct RuntimeDeps {
 
 impl MarketplaceServer {
     pub fn to_summary(&self, installed_ids: &[String]) -> RegistryServerSummary {
-        let (transport_types, registry_type, requires_config) = match &self.install {
-            Some(config) => (
-                vec!["stdio".to_string()],
-                config.runtime().map(String::from),
-                !config.placeholder_env_vars().is_empty(),
-            ),
-            None => (vec![], None, false),
+        let (transport_types, registry_type, requires_config, has_remote) = match &self.install {
+            Some(config) => {
+                let is_proxy = config.is_http_proxy();
+                (
+                    if is_proxy {
+                        vec!["http".to_string()]
+                    } else {
+                        vec!["stdio".to_string()]
+                    },
+                    if is_proxy {
+                        None
+                    } else {
+                        config.runtime().map(String::from)
+                    },
+                    !config.placeholder_env_vars().is_empty(),
+                    is_proxy,
+                )
+            }
+            None => (vec![], None, false, false),
         };
 
         RegistryServerSummary {
@@ -186,7 +268,7 @@ impl MarketplaceServer {
             transport_types,
             registry_type,
             requires_config,
-            has_remote: false,
+            has_remote,
             repository_url: self.repository_url.clone(),
             installed: installed_ids.contains(&self.id),
             stars: self.stars,
