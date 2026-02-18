@@ -784,16 +784,19 @@ pub async fn enable_integration(
 
     let imported_count = {
         let mut s = state.lock().unwrap();
-        let existing_names: Vec<String> = s.servers.iter().map(|srv| srv.name.clone()).collect();
 
         let mut imported = 0;
         for server in candidates {
-            if existing_names.contains(&server.name) {
-                info!("Skipping import of '{}' — already exists", server.name);
-                continue;
+            if let Some(idx) = s.servers.iter().position(|srv| srv.name == server.name) {
+                info!(
+                    "Replacing existing server '{}' with import from {}",
+                    server.name, tool.name
+                );
+                s.servers[idx] = server;
+            } else {
+                info!("Imported MCP server '{}' from {}", server.name, tool.name);
+                s.servers.push(server);
             }
-            info!("Imported MCP server '{}' from {}", server.name, tool.name);
-            s.servers.push(server);
             imported += 1;
         }
 

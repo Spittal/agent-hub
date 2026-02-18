@@ -11,6 +11,7 @@ const integrations = ref<AiToolInfo[] | null>(null);
 const proxyStatus = ref<ProxyStatus | null>(null);
 const error = ref<string | null>(null);
 const togglingId = ref<string | null>(null);
+const confirmingId = ref<string | null>(null);
 
 const installedTools = computed(() =>
   integrations.value?.filter(t => t.installed) ?? []
@@ -35,6 +36,7 @@ async function fetchProxyStatus() {
 
 async function migrateAndEnable(tool: AiToolInfo) {
   togglingId.value = tool.id;
+  confirmingId.value = null;
   try {
     await invoke('enable_integration', { id: tool.id });
     await store.loadServers();
@@ -71,6 +73,15 @@ function serverSummary(server: AiToolInfo['existingServers'][number]): string {
 
 function isBusy(tool: AiToolInfo): boolean {
   return togglingId.value === tool.id;
+}
+
+function willOverwrite(serverName: string): string | null {
+  const existing = store.servers.find(s => s.name === serverName);
+  return existing ? existing.name : null;
+}
+
+function hasOverwrites(tool: AiToolInfo): boolean {
+  return tool.existingServers.some(s => willOverwrite(s.name));
 }
 
 onMounted(() => {
@@ -121,14 +132,32 @@ onMounted(() => {
                   Managed
                 </span>
                 <!-- Migrate & Enable: shown when servers exist and tool is not yet enabled -->
-                <button
-                  v-else-if="tool.existingServers.length"
-                  class="rounded bg-accent px-3 py-1 text-[11px] font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
-                  :disabled="isBusy(tool) || !(proxyStatus?.running ?? false)"
-                  @click="migrateAndEnable(tool)"
-                >
-                  {{ isBusy(tool) ? 'Migrating...' : 'Migrate & Enable' }}
-                </button>
+                <template v-else-if="tool.existingServers.length">
+                  <template v-if="confirmingId === tool.id">
+                    <button
+                      class="rounded bg-accent px-3 py-1 text-[11px] font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+                      :disabled="isBusy(tool) || !(proxyStatus?.running ?? false)"
+                      @click="migrateAndEnable(tool)"
+                    >
+                      {{ isBusy(tool) ? 'Migrating...' : 'Confirm' }}
+                    </button>
+                    <button
+                      v-if="!isBusy(tool)"
+                      class="rounded bg-surface-3 px-3 py-1 text-[11px] text-text-secondary transition-colors hover:bg-surface-2"
+                      @click="confirmingId = null"
+                    >
+                      Cancel
+                    </button>
+                  </template>
+                  <button
+                    v-else
+                    class="rounded bg-accent px-3 py-1 text-[11px] font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+                    :disabled="isBusy(tool) || !(proxyStatus?.running ?? false)"
+                    @click="hasOverwrites(tool) ? confirmingId = tool.id : migrateAndEnable(tool)"
+                  >
+                    Migrate & Enable
+                  </button>
+                </template>
                 <!-- Enable (no servers to migrate) -->
                 <button
                   v-else-if="!tool.enabled"
@@ -150,16 +179,28 @@ onMounted(() => {
               </div>
             </div>
 
+            <!-- Overwrite warning -->
+            <div v-if="confirmingId === tool.id && hasOverwrites(tool)" class="border-t border-border/50 px-3 py-2">
+              <p class="text-[11px] text-status-connecting">
+                Some servers below share a name with servers you already have. Migrating will replace your existing configurations with the ones from {{ tool.name }}.
+              </p>
+            </div>
+
             <!-- Server list -->
             <div v-if="tool.existingServers.length" class="border-t border-border/50 px-3 py-2">
               <div class="space-y-1">
                 <div
                   v-for="server in tool.existingServers"
                   :key="server.name"
-                  class="flex items-center gap-2 rounded bg-surface-0 px-2 py-1.5"
+                  class="rounded bg-surface-0 px-2 py-1.5"
                 >
-                  <span class="font-mono text-[11px] font-medium text-text-secondary">{{ server.name }}</span>
-                  <span class="truncate text-[10px] text-text-muted">{{ serverSummary(server) }}</span>
+                  <div class="flex items-center gap-2">
+                    <span class="font-mono text-[11px] font-medium text-text-secondary">{{ server.name }}</span>
+                    <span class="truncate text-[10px] text-text-muted">{{ serverSummary(server) }}</span>
+                  </div>
+                  <div v-if="willOverwrite(server.name)" class="mt-0.5 text-[10px] text-status-connecting">
+                    will replace existing on migrate
+                  </div>
                 </div>
               </div>
             </div>
