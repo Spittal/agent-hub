@@ -111,6 +111,7 @@ pub fn run() {
             commands::registry::get_registry_server,
             commands::registry::install_registry_server,
             commands::registry::check_runtime_deps,
+            commands::registry::fetch_readme,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

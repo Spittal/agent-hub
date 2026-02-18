@@ -93,10 +93,13 @@ async function onManualSubmit(values: { name: string; transport: 'stdio' | 'http
       <div class="mb-4 flex items-center justify-between">
         <h1 class="text-base font-semibold text-text-primary">Add Server</h1>
         <button
-          class="text-xs text-text-muted transition-colors hover:text-text-secondary"
+          class="inline-flex items-center gap-1 rounded-md border border-border bg-surface-2 px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-3"
           @click="showManualSetup = !showManualSetup"
         >
-          {{ showManualSetup ? 'Browse servers' : 'Manually Add' }}
+          <svg v-if="!showManualSetup" xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+          </svg>
+          {{ showManualSetup ? 'Browse Servers' : 'Add Manually' }}
         </button>
       </div>
 
@@ -117,6 +120,11 @@ async function onManualSubmit(values: { name: string; transport: 'stdio' | 'http
 
       <!-- Marketplace -->
       <template v-else>
+      <!-- MCPAnvil disclaimer -->
+      <div class="mb-4 rounded-lg bg-surface-2 p-3 text-xs text-text-secondary">
+        <strong>Community directory</strong> — Servers listed here are sourced from MCPAnvil and have not been vetted. Many popular tools don't publish here — check your tool's docs or integrations page for MCP setup instructions, then use "Add Manually".
+      </div>
+
       <!-- Search -->
       <div class="relative mb-4">
         <svg

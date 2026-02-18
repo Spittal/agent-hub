@@ -99,6 +99,14 @@ pub async fn install_registry_server(
 }
 
 #[tauri::command]
+pub async fn fetch_readme(
+    cache: State<'_, MarketplaceCache>,
+    repository_url: String,
+) -> Result<Option<String>, AppError> {
+    Ok(cache.fetch_readme(&repository_url).await)
+}
+
+#[tauri::command]
 pub async fn check_runtime_deps() -> Result<RuntimeDeps, AppError> {
     let (npx, uvx, docker) = tokio::join!(
         check_command("npx", &["--version"]),

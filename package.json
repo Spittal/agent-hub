@@ -19,6 +19,7 @@
     "@tailwindcss/vite": "^4.1.18",
     "@tauri-apps/cli": "^2.10.0",
     "@types/d3-force": "^3.0.10",
+    "@types/markdown-it": "^14.1.2",
     "@vitejs/plugin-vue": "^6.0.4",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.9.3",
@@ -27,9 +28,12 @@
     "vue-tsc": "^3.2.4"
   },
   "dependencies": {
+    "@tailwindcss/typography": "^0.5.19",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-opener": "^2.5.3",
     "d3-force": "^3.0.0",
+    "markdown-it": "^14.1.1",
+    "markdown-it-github-alerts": "^1.0.1",
     "pinia": "^3.0.4",
     "v-network-graph": "^0.9.22",
     "vue-router": "^5.0.2"

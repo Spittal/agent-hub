@@ -213,6 +213,7 @@ pub struct MarketplaceServerDetail {
     pub args: Vec<String>,
     pub env_vars: Vec<MarketplaceEnvVar>,
     pub runtime: Option<String>,
+    pub transport_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -276,14 +277,22 @@ impl MarketplaceServer {
     }
 
     pub fn to_detail(&self) -> MarketplaceServerDetail {
-        let (command, args, env_vars, runtime) = match &self.install {
-            Some(config) => (
-                Some(config.command.clone()),
-                config.args.clone(),
-                config.placeholder_env_vars(),
-                config.runtime().map(String::from),
-            ),
-            None => (None, vec![], vec![], None),
+        let (command, args, env_vars, runtime, transport_types) = match &self.install {
+            Some(config) => {
+                let is_proxy = config.is_http_proxy();
+                (
+                    Some(config.command.clone()),
+                    config.args.clone(),
+                    config.placeholder_env_vars(),
+                    config.runtime().map(String::from),
+                    if is_proxy {
+                        vec!["http".to_string()]
+                    } else {
+                        vec!["stdio".to_string()]
+                    },
+                )
+            }
+            None => (None, vec![], vec![], None, vec![]),
         };
 
         MarketplaceServerDetail {
@@ -297,6 +306,7 @@ impl MarketplaceServer {
             args,
             env_vars,
             runtime,
+            transport_types,
         }
     }
 }
@@ -435,6 +445,28 @@ impl MarketplaceCache {
             .iter()
             .find(|s| s.id == id)
             .map(|s| s.to_detail())
+    }
+
+    /// Fetch a GitHub repository's README.md content.
+    pub async fn fetch_readme(&self, repo_url: &str) -> Option<String> {
+        let captures = repo_url
+            .strip_prefix("https://github.com/")
+            .or_else(|| repo_url.strip_prefix("http://github.com/"))?;
+        let mut parts = captures.splitn(3, '/');
+        let owner = parts.next()?;
+        let repo = parts.next()?.trim_end_matches(".git");
+        if owner.is_empty() || repo.is_empty() {
+            return None;
+        }
+
+        let raw_url = format!(
+            "https://raw.githubusercontent.com/{owner}/{repo}/HEAD/README.md"
+        );
+        let resp = self.http.get(&raw_url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        resp.text().await.ok()
     }
 
     /// Look up a server's install config by id.
