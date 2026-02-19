@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::path::Path;
+
 use serde::Serialize;
 use tauri::{AppHandle, State};
 use tracing::{info, warn};
@@ -289,6 +292,161 @@ pub struct SkillContentResponse {
     pub id: String,
     pub name: String,
     pub content: String,
+}
+
+// ---------------------------------------------------------------------------
+// Local skill discovery commands
+// ---------------------------------------------------------------------------
+
+/// A skill found on disk in a tool's skills directory that is NOT in the
+/// installed_skills state (i.e. not installed via the marketplace).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSkill {
+    /// Composite id: "tool_id:skill_id"
+    pub id: String,
+    /// Display name from frontmatter or directory name
+    pub name: String,
+    /// Description from frontmatter
+    pub description: String,
+    /// Tool identifier, e.g. "claude-code"
+    pub tool_id: String,
+    /// Tool display name, e.g. "Claude Code"
+    pub tool_name: String,
+    /// Directory or file name (without extension)
+    pub skill_id: String,
+    /// Absolute path to the SKILL.md file
+    pub file_path: String,
+}
+
+/// Scan all tool skill directories and return skills found on disk that are
+/// NOT tracked in the installed_skills state.
+#[tauri::command]
+pub async fn list_local_skills(
+    state: State<'_, SharedState>,
+) -> Result<Vec<LocalSkill>, AppError> {
+    let installed_skill_ids: HashSet<String> = {
+        let s = state.lock().unwrap();
+        s.installed_skills.iter().map(|sk| sk.skill_id.clone()).collect()
+    };
+
+    let tools = skills_config::get_skill_tool_definitions()?;
+    let mut results: Vec<LocalSkill> = Vec::new();
+
+    for tool in &tools {
+        if !tool.skills_dir.exists() {
+            continue;
+        }
+
+        let entries = match std::fs::read_dir(&tool.skills_dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                warn!("Failed to read skills dir {}: {e}", tool.skills_dir.display());
+                continue;
+            }
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+
+            // Case 1: subdirectory with SKILL.md
+            if path.is_dir() {
+                let skill_id = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(name) => name.to_string(),
+                    None => continue,
+                };
+
+                if installed_skill_ids.contains(&skill_id) {
+                    continue;
+                }
+
+                let skill_md = path.join("SKILL.md");
+                if !skill_md.exists() {
+                    continue;
+                }
+
+                if let Some(local_skill) =
+                    read_local_skill(&skill_md, &skill_id, tool.id, tool.name)
+                {
+                    results.push(local_skill);
+                }
+            }
+            // Case 2: standalone .md file
+            else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                let skill_id = match path.file_stem().and_then(|n| n.to_str()) {
+                    Some(name) => name.to_string(),
+                    None => continue,
+                };
+
+                if installed_skill_ids.contains(&skill_id) {
+                    continue;
+                }
+
+                if let Some(local_skill) =
+                    read_local_skill(&path, &skill_id, tool.id, tool.name)
+                {
+                    results.push(local_skill);
+                }
+            }
+        }
+    }
+
+    results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(results)
+}
+
+/// Read a single SKILL.md file and build a `LocalSkill`, returning `None` on
+/// any IO or parse failure (we just skip broken entries).
+fn read_local_skill(
+    file_path: &Path,
+    skill_id: &str,
+    tool_id: &str,
+    tool_name: &str,
+) -> Option<LocalSkill> {
+    let content = std::fs::read_to_string(file_path)
+        .map_err(|e| warn!("Failed to read {}: {e}", file_path.display()))
+        .ok()?;
+
+    let (fm, _body) = parse_frontmatter(&content);
+
+    let name = fm
+        .name
+        .unwrap_or_else(|| skill_id.to_string());
+
+    Some(LocalSkill {
+        id: format!("{tool_id}:{skill_id}"),
+        name,
+        description: fm.description.unwrap_or_default(),
+        tool_id: tool_id.to_string(),
+        tool_name: tool_name.to_string(),
+        skill_id: skill_id.to_string(),
+        file_path: file_path.to_string_lossy().into_owned(),
+    })
+}
+
+/// Read a local skill file, strip frontmatter, and return its body content.
+#[tauri::command]
+pub async fn get_local_skill_content(
+    file_path: String,
+) -> Result<SkillContentResponse, AppError> {
+    let path = Path::new(&file_path);
+    let content = std::fs::read_to_string(path)?;
+    let (fm, body) = parse_frontmatter(&content);
+
+    let name = fm.name.unwrap_or_else(|| {
+        // Derive name from parent directory name
+        path.parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("Unknown")
+            .to_string()
+    });
+
+    Ok(SkillContentResponse {
+        id: file_path,
+        name,
+        content: body,
+    })
 }
 
 // ---------------------------------------------------------------------------

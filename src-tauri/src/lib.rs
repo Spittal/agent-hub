@@ -116,6 +116,8 @@ pub fn run() {
             commands::skills::uninstall_skill,
             commands::skills::toggle_skill,
             commands::skills::get_skill_content,
+            commands::skills::list_local_skills,
+            commands::skills::get_local_skill_content,
             commands::skills::detect_skill_integrations,
             commands::skills::enable_skill_integration,
             commands::skills::disable_skill_integration,
