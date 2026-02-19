@@ -26,6 +26,7 @@ onMounted(async () => {
   await serversStore.loadServers();
   serversStore.autoConnectServers();
   skillsStore.loadInstalled();
+  skillsStore.loadLocal();
   pluginsStore.loadInstalled();
   // Set app icon at runtime (works during tauri dev)
   fetch('/app-icon.png')

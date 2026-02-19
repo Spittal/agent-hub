@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type {
   InstalledSkill,
+  LocalSkill,
   SkillContentResponse,
   SkillsSearchResult,
   MarketplaceSkillSummary,
@@ -15,6 +16,31 @@ export const useSkillsStore = defineStore('skills', () => {
   const selectedSkillId = ref<string | null>(null);
   const skillContent = ref<SkillContentResponse | null>(null);
 
+  // --- Local skills ---
+  const localSkills = ref<LocalSkill[]>([]);
+  const selectedKind = ref<'installed' | 'local' | null>(null);
+  const localSkillContent = ref<SkillContentResponse | null>(null);
+
+  async function loadLocal() {
+    try {
+      localSkills.value = await invoke<LocalSkill[]>('list_local_skills');
+    } catch (e) {
+      console.error('Failed to load local skills:', e);
+    }
+  }
+
+  async function selectLocalSkill(id: string, filePath: string) {
+    selectedSkillId.value = id;
+    selectedKind.value = 'local';
+    skillContent.value = null;
+    try {
+      localSkillContent.value = await invoke<SkillContentResponse>('get_local_skill_content', { filePath });
+    } catch (e) {
+      console.error('Failed to load local skill content:', e);
+      localSkillContent.value = null;
+    }
+  }
+
   async function loadInstalled() {
     try {
       installedSkills.value = await invoke<InstalledSkill[]>('list_installed_skills');
@@ -25,6 +51,8 @@ export const useSkillsStore = defineStore('skills', () => {
 
   async function selectSkill(id: string) {
     selectedSkillId.value = id;
+    selectedKind.value = 'installed';
+    localSkillContent.value = null;
     try {
       skillContent.value = await invoke<SkillContentResponse>('get_skill_content', { id });
     } catch (e) {
@@ -35,7 +63,9 @@ export const useSkillsStore = defineStore('skills', () => {
 
   function clearSelection() {
     selectedSkillId.value = null;
+    selectedKind.value = null;
     skillContent.value = null;
+    localSkillContent.value = null;
   }
 
   async function toggleSkill(id: string, enabled: boolean) {
@@ -120,6 +150,12 @@ export const useSkillsStore = defineStore('skills', () => {
     toggleSkill,
     uninstallSkill,
     installSkill,
+    // Local
+    localSkills,
+    selectedKind,
+    localSkillContent,
+    loadLocal,
+    selectLocalSkill,
     // Marketplace
     marketplaceSkills,
     marketplaceLoading,
