@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State as AxumState};
@@ -80,8 +81,8 @@ pub async fn start_proxy(
         )
         .with_state(state);
 
-    // Bind to localhost with port 0 to get a random available port
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    // Bind to a stable preferred port, falling back to OS-assigned if busy
+    let listener = bind_preferred_port().await?;
     let addr = listener.local_addr()?;
     let port = addr.port();
 
@@ -98,6 +99,44 @@ pub async fn start_proxy(
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+const PORT_RANGE_START: u16 = 55_000;
+const PORT_RANGE_SIZE: u16 = 10_000;
+const PORT_ATTEMPTS: u16 = 20;
+
+/// Derive a deterministic preferred port from the current username.
+/// The same user always gets the same base port across restarts.
+fn preferred_port() -> u16 {
+    let username = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_default();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    username.hash(&mut hasher);
+    let hash = hasher.finish();
+    PORT_RANGE_START + (hash % PORT_RANGE_SIZE as u64) as u16
+}
+
+/// Try to bind to the preferred port, then nearby ports, then fall back to OS-assigned.
+async fn bind_preferred_port() -> Result<TcpListener, Box<dyn std::error::Error + Send + Sync>> {
+    let base = preferred_port();
+    for offset in 0..PORT_ATTEMPTS {
+        let port = PORT_RANGE_START + ((base - PORT_RANGE_START + offset) % PORT_RANGE_SIZE);
+        match TcpListener::bind(format!("127.0.0.1:{port}")).await {
+            Ok(listener) => {
+                if offset > 0 {
+                    info!(
+                        "Preferred proxy port {} was busy, using {}",
+                        base, port
+                    );
+                }
+                return Ok(listener);
+            }
+            Err(_) => continue,
+        }
+    }
+    info!("All preferred ports busy, falling back to OS-assigned port");
+    Ok(TcpListener::bind("127.0.0.1:0").await?)
 }
 
 /// Handle GET requests — spec says server MUST return SSE stream or 405.

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import ServerList from './components/ServerList.vue';
 import SkillList from './components/SkillList.vue';
@@ -21,6 +21,10 @@ const serversCollapsed = ref(false);
 const skillsCollapsed = ref(false);
 const pluginsCollapsed = ref(false);
 const memoryCollapsed = ref(false);
+
+const isMemoryEnabled = computed(() =>
+  serversStore.servers.some(s => s.managedBy === 'memory')
+);
 
 onMounted(async () => {
   await serversStore.loadServers();
@@ -110,42 +114,44 @@ onMounted(async () => {
           </div>
           <PluginList v-show="!pluginsCollapsed" />
 
-          <!-- MEMORY section -->
-          <div class="flex items-center justify-between border-b border-border px-3 py-2">
-            <button
-              class="flex items-center gap-1 font-mono text-xs font-medium tracking-wide text-text-secondary uppercase"
-              @click="memoryCollapsed = !memoryCollapsed"
-            >
-              <span
-                class="inline-block text-[10px] leading-none transition-transform"
-                :class="memoryCollapsed ? '-rotate-90' : ''"
-              >&#9662;</span>
-              Memory
-            </button>
-          </div>
-          <div v-show="!memoryCollapsed">
-            <router-link
-              to="/memories"
-              class="flex items-center px-3 py-1.5 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
-              active-class="bg-surface-2 text-text-secondary"
-            >
-              Browse
-            </router-link>
-            <router-link
-              to="/memory-graph"
-              class="flex items-center px-3 py-1.5 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
-              active-class="bg-surface-2 text-text-secondary"
-            >
-              Graph
-            </router-link>
-            <router-link
-              to="/memory-data"
-              class="flex items-center px-3 py-1.5 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
-              active-class="bg-surface-2 text-text-secondary"
-            >
-              Data Management
-            </router-link>
-          </div>
+          <!-- MEMORY section (only visible when memory server is configured) -->
+          <template v-if="isMemoryEnabled">
+            <div class="flex items-center justify-between border-b border-border px-3 py-2">
+              <button
+                class="flex items-center gap-1 font-mono text-xs font-medium tracking-wide text-text-secondary uppercase"
+                @click="memoryCollapsed = !memoryCollapsed"
+              >
+                <span
+                  class="inline-block text-[10px] leading-none transition-transform"
+                  :class="memoryCollapsed ? '-rotate-90' : ''"
+                >&#9662;</span>
+                Memory
+              </button>
+            </div>
+            <div v-show="!memoryCollapsed">
+              <router-link
+                to="/memories"
+                class="flex items-center px-3 py-1.5 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
+                active-class="bg-surface-2 text-text-secondary"
+              >
+                Browse
+              </router-link>
+              <router-link
+                to="/memory-graph"
+                class="flex items-center px-3 py-1.5 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
+                active-class="bg-surface-2 text-text-secondary"
+              >
+                Graph
+              </router-link>
+              <router-link
+                to="/memory-data"
+                class="flex items-center px-3 py-1.5 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
+                active-class="bg-surface-2 text-text-secondary"
+              >
+                Data Management
+              </router-link>
+            </div>
+          </template>
         </div>
 
         <!-- Bottom nav links -->

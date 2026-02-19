@@ -22,7 +22,7 @@ use tracing::info;
 pub fn run() {
     tracing_subscriber::fmt::init();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -150,6 +150,17 @@ pub fn run() {
             commands::plugins::list_installed_plugins,
             commands::plugins::update_marketplace,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            // Restore native configs so AI tools work without MCP Manager running
+            if let Err(e) = commands::integrations::restore_all_integration_configs(app_handle) {
+                tracing::warn!("Failed to restore integration configs on exit: {e}");
+            } else {
+                info!("Restored integration configs to native mode on exit");
+            }
+        }
+    });
 }

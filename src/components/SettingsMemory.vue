@@ -5,12 +5,14 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { storeToRefs } from 'pinia';
 import { useServersStore } from '@/stores/servers';
+import { useSkillsStore } from '@/stores/skills';
 import type { MemoryStatus } from '@/types/memory';
 import type { EmbeddingConfigStatus, EmbeddingProvider, EmbeddingModelInfo } from '@/types/embedding';
 import { OLLAMA_MODELS, OPENAI_MODELS } from '@/types/embedding';
 import ToggleCard from './ToggleCard.vue';
 
 const store = useServersStore();
+const skillsStore = useSkillsStore();
 const { servers, lastError } = storeToRefs(store);
 
 // Memory status
@@ -155,6 +157,8 @@ async function toggle() {
       await store.loadServers();
       store.autoConnectServers();
     }
+    skillsStore.loadInstalled();
+    skillsStore.loadLocal();
     await fetchStatus();
   } catch (e) {
     error.value = String(e);

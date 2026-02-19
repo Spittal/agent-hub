@@ -1283,8 +1283,252 @@ fn remove_codex_entries(path: &Path) -> Result<(), AppError> {
 }
 
 // ---------------------------------------------------------------------------
+// Format-aware native config writers — write original server configs on exit
+// ---------------------------------------------------------------------------
+
+/// Write original (non-proxy) server configs to a tool's config file.
+/// This is the inverse of `write_managed_config`: it replaces proxy entries
+/// with the actual server configurations so they work without MCP Manager.
+fn write_native_config(
+    servers: &[ServerConfig],
+    path: &Path,
+    format: &ConfigFormat,
+) -> Result<(), AppError> {
+    match format {
+        ConfigFormat::McpServers => write_native_mcp_servers(servers, path),
+        ConfigFormat::OpenCode => write_native_opencode(servers, path),
+        ConfigFormat::Zed => write_native_zed(servers, path),
+        ConfigFormat::CodexToml => write_native_codex(servers, path),
+    }
+}
+
+fn write_native_mcp_servers(servers: &[ServerConfig], path: &Path) -> Result<(), AppError> {
+    let mut mcp_servers = serde_json::Map::new();
+    for srv in servers {
+        let entry = match srv.transport {
+            ServerTransport::Stdio => {
+                let mut obj = serde_json::Map::new();
+                if let Some(cmd) = &srv.command {
+                    obj.insert("command".into(), serde_json::Value::String(cmd.clone()));
+                }
+                if let Some(args) = &srv.args {
+                    obj.insert("args".into(), serde_json::json!(args));
+                }
+                if let Some(env) = &srv.env {
+                    if !env.is_empty() {
+                        obj.insert("env".into(), serde_json::json!(env));
+                    }
+                }
+                serde_json::Value::Object(obj)
+            }
+            ServerTransport::Http => {
+                let mut obj = serde_json::Map::new();
+                obj.insert("type".into(), serde_json::Value::String("http".into()));
+                if let Some(url) = &srv.url {
+                    obj.insert("url".into(), serde_json::Value::String(url.clone()));
+                }
+                if let Some(headers) = &srv.headers {
+                    if !headers.is_empty() {
+                        obj.insert("headers".into(), serde_json::json!(headers));
+                    }
+                }
+                serde_json::Value::Object(obj)
+            }
+        };
+        mcp_servers.insert(srv.name.clone(), entry);
+    }
+
+    let mut config = if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    config["mcpServers"] = serde_json::Value::Object(mcp_servers);
+
+    let content = serde_json::to_string_pretty(&config)?;
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+fn write_native_opencode(servers: &[ServerConfig], path: &Path) -> Result<(), AppError> {
+    let mut mcp = serde_json::Map::new();
+    for srv in servers {
+        let entry = match srv.transport {
+            ServerTransport::Stdio => {
+                let mut cmd_arr: Vec<String> = Vec::new();
+                if let Some(cmd) = &srv.command {
+                    cmd_arr.push(cmd.clone());
+                }
+                if let Some(args) = &srv.args {
+                    cmd_arr.extend(args.iter().cloned());
+                }
+                let mut obj = serde_json::Map::new();
+                obj.insert("type".into(), serde_json::Value::String("local".into()));
+                obj.insert("command".into(), serde_json::json!(cmd_arr));
+                if let Some(env) = &srv.env {
+                    if !env.is_empty() {
+                        obj.insert("environment".into(), serde_json::json!(env));
+                    }
+                }
+                serde_json::Value::Object(obj)
+            }
+            ServerTransport::Http => {
+                let mut obj = serde_json::Map::new();
+                obj.insert("type".into(), serde_json::Value::String("remote".into()));
+                if let Some(url) = &srv.url {
+                    obj.insert("url".into(), serde_json::Value::String(url.clone()));
+                }
+                serde_json::Value::Object(obj)
+            }
+        };
+        mcp.insert(srv.name.clone(), entry);
+    }
+
+    let mut config = if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    config["mcp"] = serde_json::Value::Object(mcp);
+
+    let content = serde_json::to_string_pretty(&config)?;
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+fn write_native_zed(servers: &[ServerConfig], path: &Path) -> Result<(), AppError> {
+    let mut context_servers = serde_json::Map::new();
+    for srv in servers {
+        let entry = match srv.transport {
+            ServerTransport::Stdio => {
+                let mut obj = serde_json::Map::new();
+                if let Some(cmd) = &srv.command {
+                    obj.insert("command".into(), serde_json::Value::String(cmd.clone()));
+                }
+                if let Some(args) = &srv.args {
+                    obj.insert("args".into(), serde_json::json!(args));
+                }
+                if let Some(env) = &srv.env {
+                    if !env.is_empty() {
+                        obj.insert("env".into(), serde_json::json!(env));
+                    }
+                }
+                serde_json::Value::Object(obj)
+            }
+            ServerTransport::Http => {
+                let mut obj = serde_json::Map::new();
+                if let Some(url) = &srv.url {
+                    obj.insert("url".into(), serde_json::Value::String(url.clone()));
+                }
+                serde_json::Value::Object(obj)
+            }
+        };
+        context_servers.insert(srv.name.clone(), entry);
+    }
+
+    let mut config = if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        let stripped = strip_json_comments(&content);
+        serde_json::from_str::<serde_json::Value>(&stripped).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    config["context_servers"] = serde_json::Value::Object(context_servers);
+
+    let content = serde_json::to_string_pretty(&config)?;
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+fn write_native_codex(servers: &[ServerConfig], path: &Path) -> Result<(), AppError> {
+    let mut mcp_servers = toml::map::Map::new();
+    for srv in servers {
+        let mut entry = toml::map::Map::new();
+        match srv.transport {
+            ServerTransport::Stdio => {
+                if let Some(cmd) = &srv.command {
+                    entry.insert("command".into(), toml::Value::String(cmd.clone()));
+                }
+                if let Some(args) = &srv.args {
+                    let arr: Vec<toml::Value> = args
+                        .iter()
+                        .map(|a| toml::Value::String(a.clone()))
+                        .collect();
+                    entry.insert("args".into(), toml::Value::Array(arr));
+                }
+                if let Some(env) = &srv.env {
+                    if !env.is_empty() {
+                        let env_table: toml::map::Map<String, toml::Value> = env
+                            .iter()
+                            .map(|(k, v)| (k.clone(), toml::Value::String(v.clone())))
+                            .collect();
+                        entry.insert("env".into(), toml::Value::Table(env_table));
+                    }
+                }
+            }
+            ServerTransport::Http => {
+                if let Some(url) = &srv.url {
+                    entry.insert("url".into(), toml::Value::String(url.clone()));
+                }
+            }
+        }
+        mcp_servers.insert(srv.name.clone(), toml::Value::Table(entry));
+    }
+
+    let mut config = if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        content
+            .parse::<toml::Value>()
+            .unwrap_or(toml::Value::Table(toml::map::Map::new()))
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+
+    if let Some(table) = config.as_table_mut() {
+        table.insert("mcp_servers".into(), toml::Value::Table(mcp_servers));
+    }
+
+    let content = toml::to_string_pretty(&config)
+        .map_err(|e| AppError::Protocol(format!("Failed to serialize TOML: {e}")))?;
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Sync enabled configs with current connected servers
 // ---------------------------------------------------------------------------
+
+/// Restore all enabled integration configs to native (non-proxy) server entries.
+/// Called on app exit so configs work without MCP Manager running.
+pub fn restore_all_integration_configs(app: &AppHandle) -> Result<(), AppError> {
+    let home = home_dir()?;
+    let tools = get_tool_definitions(&home);
+
+    let (enabled_ids, servers) = {
+        let state = app.state::<SharedState>();
+        let s = state.lock().unwrap();
+        (s.enabled_integrations.clone(), s.servers.clone())
+    };
+
+    for tool in tools {
+        if !enabled_ids.contains(&tool.id) || !tool.config_path.exists() {
+            continue;
+        }
+
+        if let Err(e) = write_native_config(&servers, &tool.config_path, &tool.config_format) {
+            warn!("Failed to restore native config for {}: {e}", tool.name);
+        } else {
+            info!("Restored native config for {}", tool.name);
+        }
+    }
+
+    Ok(())
+}
 
 /// Update all enabled integration configs with current connected servers.
 /// Called on proxy startup, server connect/disconnect, and enable/disable.
