@@ -69,7 +69,6 @@ async function handleUpdateAll() {
       <div class="mb-4 flex items-center justify-between">
         <div>
           <h1 class="text-base font-semibold text-text-primary">Add Plugin</h1>
-          <span class="text-[11px] text-text-muted">Claude Code only</span>
         </div>
         <button
           v-if="marketplaceNames.length > 0"
@@ -92,7 +91,7 @@ async function handleUpdateAll() {
 
       <!-- Info banner -->
       <div class="mb-4 rounded-lg bg-surface-2 p-3 text-xs text-text-secondary">
-        <strong>Plugins</strong> extend Claude Code with additional capabilities. Install and manage them here — they run exclusively within Claude Code.
+        <strong>Plugins</strong> extend your AI tools with additional capabilities. Install and manage them here.
       </div>
 
       <!-- Errors -->
@@ -143,7 +142,7 @@ async function handleUpdateAll() {
         <!-- Empty -->
         <div v-else-if="!store.marketplaceLoading && store.marketplacePlugins.length === 0" class="flex flex-col items-center justify-center py-12">
           <span class="mb-2 text-xs text-text-muted">No plugins found</span>
-          <span class="text-[11px] text-text-muted">Make sure Claude Code is installed and has marketplaces configured.</span>
+          <span class="text-[11px] text-text-muted">Make sure you have an AI tool installed with marketplaces configured.</span>
         </div>
 
         <!-- Grid -->

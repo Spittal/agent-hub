@@ -158,7 +158,6 @@ async function toggle() {
       store.autoConnectServers();
     }
     skillsStore.loadInstalled();
-    skillsStore.loadLocal();
     await fetchStatus();
   } catch (e) {
     error.value = String(e);

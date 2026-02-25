@@ -2,10 +2,14 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::commands::integrations::update_all_integration_configs;
+use crate::commands::skills::{install_managed_skill, uninstall_managed_skill};
 use crate::error::AppError;
 use crate::mcp::proxy::ProxyState;
 use crate::persistence::save_tool_discovery;
 use crate::state::SharedState;
+
+const DISCOVERY_SKILL_ID: &str = "using-discovery";
+const DISCOVERY_SKILL_CONTENT: &str = include_str!("../../resources/using-discovery-SKILL.md");
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +38,20 @@ pub async fn set_discovery_mode(
     }
 
     save_tool_discovery(&app, enabled);
+
+    if enabled {
+        install_managed_skill(
+            &app,
+            &state,
+            DISCOVERY_SKILL_ID,
+            "using-discovery",
+            "Find and use MCP tools through the discovery endpoint",
+            DISCOVERY_SKILL_CONTENT,
+            "discovery",
+        );
+    } else {
+        uninstall_managed_skill(&app, &state, DISCOVERY_SKILL_ID, "discovery");
+    }
 
     let port = proxy_state.port().await;
     if let Err(e) = update_all_integration_configs(&app, port) {

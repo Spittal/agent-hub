@@ -7,20 +7,14 @@ import MarkdownIt from 'markdown-it';
 const md = new MarkdownIt();
 
 const store = useSkillsStore();
-const { selectedSkillId, selectedKind, skillContent, localSkillContent, installedSkills, localSkills } = storeToRefs(store);
+const { selectedSkillId, skillContent, installedSkills } = storeToRefs(store);
 
 const selectedInstalledSkill = computed(() =>
   installedSkills.value.find(s => s.id === selectedSkillId.value)
 );
 
-const selectedLocalSkill = computed(() =>
-  localSkills.value.find(s => s.id === selectedSkillId.value)
-);
-
 const renderedContent = computed(() => {
-  const raw = selectedKind.value === 'installed'
-    ? skillContent.value?.content
-    : localSkillContent.value?.content;
+  const raw = skillContent.value?.content;
   if (!raw) return '';
   return md.render(raw);
 });
@@ -40,13 +34,19 @@ async function onUninstall() {
 </script>
 
 <template>
-  <!-- INSTALLED (marketplace) skill detail -->
-  <div v-if="selectedKind === 'installed' && selectedInstalledSkill && skillContent" class="flex h-full flex-col">
+  <!-- Installed skill detail -->
+  <div v-if="selectedInstalledSkill && skillContent" class="flex h-full flex-col">
     <header class="flex items-center gap-3 border-b border-border px-4 py-3">
       <h1 class="text-sm font-medium">{{ selectedInstalledSkill.name }}</h1>
       <span class="font-mono text-xs text-text-muted">{{ selectedInstalledSkill.source }}</span>
       <span
-        v-if="selectedInstalledSkill.managed"
+        v-if="selectedInstalledSkill.managedBy"
+        class="rounded bg-status-connected/10 px-1.5 py-0.5 text-[10px] font-medium text-status-connected"
+      >
+        Managed by {{ selectedInstalledSkill.managedBy.charAt(0).toUpperCase() + selectedInstalledSkill.managedBy.slice(1) }}
+      </span>
+      <span
+        v-else-if="selectedInstalledSkill.managed"
         class="rounded bg-status-connected/10 px-1.5 py-0.5 text-[10px] font-medium text-status-connected"
       >
         Managed
@@ -71,7 +71,7 @@ async function onUninstall() {
             :class="selectedInstalledSkill.enabled ? 'translate-x-4' : 'translate-x-0'"
           />
         </button>
-        <template v-if="!selectedInstalledSkill.managed">
+        <template v-if="!selectedInstalledSkill.managed && !selectedInstalledSkill.managedBy">
           <template v-if="confirmUninstall">
             <button
               class="rounded bg-status-error px-3 py-1 text-[11px] font-medium text-white transition-colors hover:bg-status-error/80"
@@ -100,27 +100,6 @@ async function onUninstall() {
     <div class="min-h-0 flex-1 overflow-y-auto p-4">
       <section v-if="selectedInstalledSkill.description" class="mb-4">
         <p class="text-xs text-text-secondary">{{ selectedInstalledSkill.description }}</p>
-      </section>
-      <section>
-        <h2 class="mb-2 font-mono text-xs font-medium tracking-wide text-text-muted uppercase">SKILL.md</h2>
-        <div class="prose-skill rounded border border-border bg-surface-1 p-3 text-xs leading-relaxed text-text-secondary" v-html="renderedContent" />
-      </section>
-    </div>
-  </div>
-
-  <!-- LOCAL skill detail -->
-  <div v-else-if="selectedKind === 'local' && selectedLocalSkill && localSkillContent" class="flex h-full flex-col">
-    <header class="flex items-center gap-3 border-b border-border px-4 py-3">
-      <h1 class="text-sm font-medium">{{ selectedLocalSkill.name }}</h1>
-      <span class="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] font-medium text-text-muted">{{ selectedLocalSkill.toolName }}</span>
-    </header>
-
-    <div class="min-h-0 flex-1 overflow-y-auto p-4">
-      <section v-if="selectedLocalSkill.description" class="mb-4">
-        <p class="text-xs text-text-secondary">{{ selectedLocalSkill.description }}</p>
-      </section>
-      <section class="mb-4">
-        <div class="truncate font-mono text-[10px] text-text-muted">{{ selectedLocalSkill.filePath }}</div>
       </section>
       <section>
         <h2 class="mb-2 font-mono text-xs font-medium tracking-wide text-text-muted uppercase">SKILL.md</h2>

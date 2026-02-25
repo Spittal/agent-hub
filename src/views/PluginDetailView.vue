@@ -120,7 +120,7 @@ const categoryIcons: Record<string, string> = {
 
       <!-- Auth info -->
       <div class="mb-4 rounded-lg bg-surface-2 p-3 text-xs text-text-secondary">
-        If this plugin requires authentication, you'll be prompted to authorize on your first use in Claude Code.
+        If this plugin requires authentication, you'll be prompted to authorize on first use.
       </div>
 
       <!-- Description -->

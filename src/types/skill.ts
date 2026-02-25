@@ -33,6 +33,7 @@ export interface InstalledSkill {
   enabled: boolean;
   installs?: number;
   managed?: boolean;
+  managedBy?: string;
 }
 
 // Skill content response (for detail view)
@@ -42,15 +43,11 @@ export interface SkillContentResponse {
   content: string;
 }
 
-// Local skill (discovered on disk, not managed by marketplace)
-export interface LocalSkill {
-  id: string;
+// Existing skill found on disk (not yet imported)
+export interface ExistingSkillInfo {
+  skillId: string;
   name: string;
   description: string;
-  toolId: string;
-  toolName: string;
-  skillId: string;
-  filePath: string;
 }
 
 // Skill tool info (for Settings > Skills)
@@ -60,4 +57,5 @@ export interface SkillToolInfo {
   installed: boolean;
   enabled: boolean;
   skillsPath: string;
+  existingSkills: ExistingSkillInfo[];
 }

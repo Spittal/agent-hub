@@ -20,7 +20,10 @@ pub struct InstalledSkill {
     pub enabled: bool,
     /// Install count from marketplace at install time
     pub installs: Option<u64>,
-    /// Whether this skill is managed by a feature (e.g. Memory) and cannot be uninstalled directly.
-    #[serde(default)]
-    pub managed: bool,
+    /// Legacy flag — use `managed_by` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<bool>,
+    /// Which feature manages this skill (e.g. "memory", "discovery"). Managed skills cannot be uninstalled directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_by: Option<String>,
 }

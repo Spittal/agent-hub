@@ -18,7 +18,7 @@ async fn run_claude_plugin(args: &[&str]) -> Result<String, AppError> {
         .map_err(|e| {
             tracing::warn!("Failed to run claude CLI: {e}");
             AppError::DependencyNotFound(
-                "Claude Code CLI not found. Make sure `claude` is installed and in your PATH."
+                "Claude CLI not found. Make sure `claude` is installed and in your PATH."
                     .to_string(),
             )
         })?;

@@ -117,7 +117,21 @@ pub fn save_tool_discovery(app: &AppHandle, enabled: bool) {
 }
 
 pub fn load_installed_skills(app: &AppHandle) -> Vec<InstalledSkill> {
-    store_get(app, INSTALLED_SKILLS_KEY).unwrap_or_default()
+    let mut skills: Vec<InstalledSkill> = store_get(app, INSTALLED_SKILLS_KEY).unwrap_or_default();
+    // Migrate legacy `managed: true` → `managed_by: "memory"`
+    let mut migrated = false;
+    for skill in &mut skills {
+        if skill.managed == Some(true) && skill.managed_by.is_none() {
+            skill.managed_by = Some("memory".into());
+            skill.managed = None;
+            migrated = true;
+        }
+    }
+    if migrated {
+        info!("Migrated legacy skill 'managed' field to 'managed_by'");
+        save_installed_skills(app, &skills);
+    }
+    skills
 }
 
 pub fn save_installed_skills(app: &AppHandle, skills: &[InstalledSkill]) {

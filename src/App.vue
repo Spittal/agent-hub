@@ -30,7 +30,6 @@ onMounted(async () => {
   await serversStore.loadServers();
   serversStore.autoConnectServers();
   skillsStore.loadInstalled();
-  skillsStore.loadLocal();
   pluginsStore.loadInstalled();
   // Set app icon at runtime (works during tauri dev)
   fetch('/app-icon.png')
@@ -103,7 +102,6 @@ onMounted(async () => {
                 :class="pluginsCollapsed ? '-rotate-90' : ''"
               >&#9662;</span>
               Plugins
-              <span class="ml-1 font-sans text-[9px] font-normal normal-case tracking-normal text-text-muted">Claude Code only</span>
             </button>
             <router-link
               to="/plugins/add"
