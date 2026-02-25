@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import SettingsIntegrations from '@/components/SettingsIntegrations.vue';
 import SettingsSkills from '@/components/SettingsSkills.vue';
 import SettingsDiscovery from '@/components/SettingsDiscovery.vue';
@@ -16,7 +17,19 @@ const sections: { id: Section; label: string }[] = [
   { id: 'proxy', label: 'Proxy' },
 ];
 
-const active = ref<Section>('integrations');
+const validIds = new Set<string>(sections.map(s => s.id));
+const route = useRoute();
+
+function tabFromQuery(): Section {
+  const tab = route.query.tab as string | undefined;
+  return tab && validIds.has(tab) ? (tab as Section) : 'integrations';
+}
+
+const active = ref<Section>(tabFromQuery());
+
+watch(() => route.query.tab, () => {
+  active.value = tabFromQuery();
+});
 </script>
 
 <template>

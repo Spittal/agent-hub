@@ -1,26 +1,20 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { useRouter, useRoute } from 'vue-router';
+import { type RouteLocationRaw } from 'vue-router';
 import { useServersStore } from '@/stores/servers';
-import { useSkillsStore } from '@/stores/skills';
 import { storeToRefs } from 'pinia';
 import { statusColor } from '@/composables/useServerStatus';
 
-const router = useRouter();
-const route = useRoute();
 const store = useServersStore();
-const skillsStore = useSkillsStore();
-const { servers, selectedServerId } = storeToRefs(store);
-
-function onSelect(id: string) {
-  store.selectServer(id);
-  skillsStore.clearSelection();
-  router.push('/');
-}
+const { servers } = storeToRefs(store);
 
 function managedByLabel(managedBy: string): string {
   if (managedBy === 'memory') return 'Memory';
-  return managedBy;
+  return managedBy.charAt(0).toUpperCase() + managedBy.slice(1);
+}
+
+function managedByRoute(managedBy: string): RouteLocationRaw {
+  return { path: '/settings', query: { tab: managedBy } };
 }
 
 const contextMenuId = ref<string | null>(null);
@@ -73,15 +67,13 @@ async function deleteServer(id: string) {
 
 <template>
   <div>
-    <div
+    <router-link
       v-for="server in servers"
       :key="server.id"
-      class="group flex cursor-pointer items-center gap-2 border-b border-border/50 px-3 py-2 transition-colors hover:bg-surface-2"
-      :class="[
-        selectedServerId === server.id && route.path === '/' ? 'bg-surface-2' : '',
-        !server.enabled ? 'opacity-50' : '',
-      ]"
-      @click="onSelect(server.id)"
+      :to="'/servers/' + server.id"
+      class="group flex items-center gap-2 border-b border-border/50 px-3 py-2 transition-colors hover:bg-surface-2"
+      :class="!server.enabled ? 'opacity-50' : ''"
+      active-class="bg-surface-2"
       @contextmenu="onContextMenu($event, server.id)"
     >
       <span
@@ -89,12 +81,14 @@ async function deleteServer(id: string) {
         :class="statusColor(server.status ?? 'disconnected', server.enabled)"
       />
       <span class="truncate text-xs">{{ server.name }}</span>
-      <span
+      <router-link
         v-if="server.managedBy"
-        class="shrink-0 rounded bg-surface-2 px-1 text-[9px] text-text-muted"
-      >{{ managedByLabel(server.managedBy) }}</span>
+        :to="managedByRoute(server.managedBy)"
+        class="ml-auto shrink-0 rounded bg-status-connected/10 px-1.5 py-0.5 text-[9px] font-medium text-status-connected transition-colors hover:bg-status-connected/20"
+        @click.stop
+      >{{ managedByLabel(server.managedBy) }}</router-link>
       <span v-if="!server.enabled" class="ml-auto text-[10px] text-text-muted">off</span>
-    </div>
+    </router-link>
     <div
       v-if="servers.length === 0"
       class="px-3 py-6 text-center text-xs text-text-muted"

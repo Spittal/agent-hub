@@ -60,7 +60,12 @@ pub fn run() {
             app_state.tool_discovery_enabled = tool_discovery_enabled;
             app_state.installed_skills = installed_skills;
             app_state.enabled_skill_integrations = enabled_skill_integrations;
-            app.manage(Mutex::new(app_state));
+            let app_state = Mutex::new(app_state);
+
+            // Reconcile managed skills for features enabled before managed skills existed
+            commands::skills::reconcile_managed_skills(app.handle(), &app_state);
+
+            app.manage(app_state);
             app.manage(tokio::sync::Mutex::new(McpConnections::new()));
             app.manage(tokio::sync::Mutex::new(OAuthStore::from_entries(oauth_entries)));
             app.manage(Mutex::new(sysinfo::System::new()) as SharedSystem);
@@ -122,6 +127,7 @@ pub fn run() {
             commands::memory::get_memory_status,
             commands::memory::enable_memory,
             commands::memory::disable_memory,
+            commands::memory::restart_memory,
             commands::memory::get_embedding_config,
             commands::memory::save_embedding_config_cmd,
             commands::memory::delete_ollama_model,

@@ -6,7 +6,6 @@ import type { OAuthStatus } from '@/types/oauth';
 
 export const useServersStore = defineStore('servers', () => {
   const servers = ref<ServerConfig[]>([]);
-  const selectedServerId = ref<string | null>(null);
   const lastError = ref<Record<string, string>>({});
   const oauthStatus = ref<Record<string, OAuthStatus>>({});
 
@@ -18,13 +17,13 @@ export const useServersStore = defineStore('servers', () => {
     }
   }
 
-  async function addServer(input: ServerConfigInput) {
+  async function addServer(input: ServerConfigInput): Promise<ServerConfig> {
     try {
       const server = await invoke<ServerConfig>('add_server', { input });
       servers.value.push(server);
-      selectedServerId.value = server.id;
       // Auto-connect
       connectServer(server.id);
+      return server;
     } catch (e) {
       console.error('Failed to add server:', e);
       throw e;
@@ -46,9 +45,6 @@ export const useServersStore = defineStore('servers', () => {
     try {
       await invoke('remove_server', { id });
       servers.value = servers.value.filter(s => s.id !== id);
-      if (selectedServerId.value === id) {
-        selectedServerId.value = servers.value[0]?.id ?? null;
-      }
     } catch (e) {
       console.error('Failed to remove server:', e);
     }
@@ -81,10 +77,6 @@ export const useServersStore = defineStore('servers', () => {
     } catch (e) {
       console.error('Failed to disconnect server:', e);
     }
-  }
-
-  function selectServer(id: string) {
-    selectedServerId.value = id;
   }
 
   function updateServerStatus(id: string, status: ServerConfig['status']) {
@@ -130,7 +122,6 @@ export const useServersStore = defineStore('servers', () => {
 
   return {
     servers,
-    selectedServerId,
     lastError,
     oauthStatus,
     loadServers,
@@ -140,7 +131,6 @@ export const useServersStore = defineStore('servers', () => {
     removeServer,
     connectServer,
     disconnectServer,
-    selectServer,
     updateServerStatus,
     setError,
     clearError,

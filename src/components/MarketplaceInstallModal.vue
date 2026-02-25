@@ -89,10 +89,9 @@ async function handleInstall() {
     connectingAfterInstall.value = true;
     await serversStore.loadServers();
     serversStore.connectServer(server.id);
-    serversStore.selectServer(server.id);
 
     emit('close');
-    router.push('/');
+    router.push('/servers/' + server.id);
   } catch (e) {
     installError.value = String(e);
   } finally {

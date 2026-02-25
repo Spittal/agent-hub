@@ -11,7 +11,16 @@ const router = createRouter({
   routes: [
     {
       path: '/',
+      redirect: '/servers',
+    },
+    {
+      path: '/servers',
       name: 'servers',
+      component: () => import('./views/ServerDetailView.vue'),
+    },
+    {
+      path: '/servers/:id',
+      name: 'server-detail',
       component: () => import('./views/ServerDetailView.vue'),
     },
     {
@@ -35,6 +44,11 @@ const router = createRouter({
       component: () => import('./views/AddSkillView.vue'),
     },
     {
+      path: '/skills/:id',
+      name: 'skill-detail',
+      component: () => import('./views/SkillDetailView.vue'),
+    },
+    {
       path: '/plugins',
       name: 'plugins',
       component: () => import('./views/PluginDetailView.vue'),
@@ -43,6 +57,11 @@ const router = createRouter({
       path: '/plugins/add',
       name: 'add-plugin',
       component: () => import('./views/AddPluginView.vue'),
+    },
+    {
+      path: '/plugins/:id',
+      name: 'plugin-detail',
+      component: () => import('./views/PluginDetailView.vue'),
     },
     {
       path: '/memories',

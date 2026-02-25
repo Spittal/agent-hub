@@ -12,7 +12,6 @@ import type {
 export const useSkillsStore = defineStore('skills', () => {
   // --- Installed skills ---
   const installedSkills = ref<InstalledSkill[]>([]);
-  const selectedSkillId = ref<string | null>(null);
   const skillContent = ref<SkillContentResponse | null>(null);
 
   async function loadInstalled() {
@@ -23,19 +22,13 @@ export const useSkillsStore = defineStore('skills', () => {
     }
   }
 
-  async function selectSkill(id: string) {
-    selectedSkillId.value = id;
+  async function fetchSkillContent(id: string) {
     try {
       skillContent.value = await invoke<SkillContentResponse>('get_skill_content', { id });
     } catch (e) {
       console.error('Failed to load skill content:', e);
       skillContent.value = null;
     }
-  }
-
-  function clearSelection() {
-    selectedSkillId.value = null;
-    skillContent.value = null;
   }
 
   async function toggleSkill(id: string, enabled: boolean) {
@@ -50,9 +43,7 @@ export const useSkillsStore = defineStore('skills', () => {
   async function uninstallSkill(id: string) {
     try {
       await invoke('uninstall_skill', { id });
-      if (selectedSkillId.value === id) {
-        clearSelection();
-      }
+      skillContent.value = null;
       await loadInstalled();
     } catch (e) {
       console.error('Failed to uninstall skill:', e);
@@ -112,11 +103,9 @@ export const useSkillsStore = defineStore('skills', () => {
   return {
     // Installed
     installedSkills,
-    selectedSkillId,
     skillContent,
     loadInstalled,
-    selectSkill,
-    clearSelection,
+    fetchSkillContent,
     toggleSkill,
     uninstallSkill,
     installSkill,

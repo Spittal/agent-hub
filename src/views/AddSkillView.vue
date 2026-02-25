@@ -28,8 +28,8 @@ async function handleInstall(skill: MarketplaceSkillSummary) {
   installingSkillId.value = skill.id;
   try {
     const installed = await store.installSkill(skill);
-    store.selectSkill(installed.id);
-    router.push('/skills');
+    store.fetchSkillContent(installed.id);
+    router.push('/skills/' + installed.id);
   } catch (e) {
     console.error('Install failed:', e);
   } finally {

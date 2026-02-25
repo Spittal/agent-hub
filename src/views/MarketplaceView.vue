@@ -37,8 +37,7 @@ async function handleInstall(server: RegistryServerSummary) {
       const created = await store.installServer(server.id);
       await serversStore.loadServers();
       serversStore.connectServer(created.id);
-      serversStore.selectServer(created.id);
-      router.push('/');
+      router.push('/servers/' + created.id);
     } catch (e) {
       console.error('Quick install failed:', e);
       // Fall back to modal

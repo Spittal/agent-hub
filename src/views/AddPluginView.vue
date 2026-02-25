@@ -37,8 +37,7 @@ async function handleInstall(plugin: PluginInfo) {
   installError.value = null;
   try {
     const key = await store.installPlugin(plugin);
-    store.selectPlugin(key);
-    router.push('/plugins');
+    router.push('/plugins/' + key);
   } catch (e) {
     installError.value = `Failed to install ${plugin.name}: ${e}`;
     console.error('Install failed:', e);

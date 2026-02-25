@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { useServersStore } from '@/stores/servers';
 import { storeToRefs } from 'pinia';
 import ToolBrowser from '@/components/ToolBrowser.vue';
@@ -7,8 +8,12 @@ import LogViewer from '@/components/LogViewer.vue';
 import { statusColor, statusLabel } from '@/composables/useServerStatus';
 import { useServerStats, formatClientName } from '@/composables/useServerStats';
 
+const route = useRoute();
+const router = useRouter();
 const store = useServersStore();
-const { servers, selectedServerId, lastError, oauthStatus } = storeToRefs(store);
+const { servers, lastError, oauthStatus } = storeToRefs(store);
+
+const selectedServerId = computed(() => route.params.id as string | undefined ?? null);
 
 const selectedServer = computed(() =>
   servers.value.find((s) => s.id === selectedServerId.value)
@@ -100,6 +105,7 @@ async function deleteServer() {
     await store.disconnectServer(id);
   }
   await store.removeServer(id);
+  router.push('/servers');
 }
 
 async function toggleEnabled() {
@@ -147,10 +153,11 @@ function formatTime(unixSecs: number): string {
       <span class="h-2 w-2 rounded-full" :class="statusColor(selectedServer.status)" />
       <h1 class="text-sm font-medium">{{ selectedServer.name }}</h1>
       <span class="font-mono text-xs text-text-muted">{{ selectedServer.transport }}</span>
-      <span
+      <router-link
         v-if="selectedServer.managedBy"
-        class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-muted"
-      >Managed by {{ managedByLabel(selectedServer.managedBy) }}</span>
+        :to="{ path: '/settings', query: { tab: selectedServer.managedBy } }"
+        class="rounded bg-status-connected/10 px-1.5 py-0.5 text-[10px] font-medium text-status-connected transition-colors hover:bg-status-connected/20"
+      >Managed by {{ managedByLabel(selectedServer.managedBy) }}</router-link>
       <div class="ml-auto flex items-center gap-2">
         <button
           class="relative h-5 w-9 rounded-full transition-colors"

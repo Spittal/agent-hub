@@ -87,8 +87,7 @@ export function useEvents() {
 
     unlisteners.push(
       await listen<NavigateToServerPayload>('navigate-to-server', (event) => {
-        serversStore.selectServer(event.payload.serverId);
-        router.push('/');
+        router.push('/servers/' + event.payload.serverId);
       })
     );
   });

@@ -6,7 +6,6 @@ import type { PluginInfo } from '@/types/plugin';
 export const usePluginsStore = defineStore('plugins', () => {
   // --- Installed plugins ---
   const installedPlugins = ref<PluginInfo[]>([]);
-  const selectedPluginId = ref<string | null>(null);
 
   async function loadInstalled() {
     try {
@@ -14,14 +13,6 @@ export const usePluginsStore = defineStore('plugins', () => {
     } catch (e) {
       console.error('Failed to load installed plugins:', e);
     }
-  }
-
-  function selectPlugin(id: string) {
-    selectedPluginId.value = id;
-  }
-
-  function clearSelection() {
-    selectedPluginId.value = null;
   }
 
   function splitId(id: string): { pluginName: string; marketplace: string } {
@@ -43,9 +34,6 @@ export const usePluginsStore = defineStore('plugins', () => {
   async function uninstallPlugin(id: string) {
     const { pluginName, marketplace } = splitId(id);
     await invoke('uninstall_plugin', { pluginName, marketplace });
-    if (selectedPluginId.value === id) {
-      clearSelection();
-    }
     await loadInstalled();
     await refreshMarketplace();
   }
@@ -103,10 +91,7 @@ export const usePluginsStore = defineStore('plugins', () => {
   return {
     // Installed
     installedPlugins,
-    selectedPluginId,
     loadInstalled,
-    selectPlugin,
-    clearSelection,
     installPlugin,
     uninstallPlugin,
     togglePlugin,

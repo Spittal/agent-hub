@@ -1,17 +1,26 @@
 <script setup lang="ts">
 import { useSkillsStore } from '@/stores/skills';
 import { storeToRefs } from 'pinia';
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import MarkdownIt from 'markdown-it';
 
 const md = new MarkdownIt();
 
+const route = useRoute();
+const router = useRouter();
 const store = useSkillsStore();
-const { selectedSkillId, skillContent, installedSkills } = storeToRefs(store);
+const { skillContent, installedSkills } = storeToRefs(store);
+
+const selectedSkillId = computed(() => route.params.id as string | undefined ?? null);
 
 const selectedInstalledSkill = computed(() =>
   installedSkills.value.find(s => s.id === selectedSkillId.value)
 );
+
+watch(selectedSkillId, (id) => {
+  if (id) store.fetchSkillContent(id);
+}, { immediate: true });
 
 const renderedContent = computed(() => {
   const raw = skillContent.value?.content;
@@ -30,6 +39,7 @@ async function onUninstall() {
   if (!selectedInstalledSkill.value) return;
   await store.uninstallSkill(selectedInstalledSkill.value.id);
   confirmUninstall.value = false;
+  router.push('/skills');
 }
 </script>
 
@@ -39,12 +49,13 @@ async function onUninstall() {
     <header class="flex items-center gap-3 border-b border-border px-4 py-3">
       <h1 class="text-sm font-medium">{{ selectedInstalledSkill.name }}</h1>
       <span class="font-mono text-xs text-text-muted">{{ selectedInstalledSkill.source }}</span>
-      <span
+      <router-link
         v-if="selectedInstalledSkill.managedBy"
-        class="rounded bg-status-connected/10 px-1.5 py-0.5 text-[10px] font-medium text-status-connected"
+        :to="{ path: '/settings', query: { tab: selectedInstalledSkill.managedBy } }"
+        class="rounded bg-status-connected/10 px-1.5 py-0.5 text-[10px] font-medium text-status-connected transition-colors hover:bg-status-connected/20"
       >
         Managed by {{ selectedInstalledSkill.managedBy.charAt(0).toUpperCase() + selectedInstalledSkill.managedBy.slice(1) }}
-      </span>
+      </router-link>
       <span
         v-else-if="selectedInstalledSkill.managed"
         class="rounded bg-status-connected/10 px-1.5 py-0.5 text-[10px] font-medium text-status-connected"
@@ -109,7 +120,7 @@ async function onUninstall() {
   </div>
 
   <!-- No selection -->
-  <div v-else-if="!selectedSkillId" class="flex h-full items-center justify-center text-text-muted">
+  <div v-else class="flex h-full items-center justify-center text-text-muted">
     <div class="text-center">
       <p class="mb-1 text-sm">No skill selected</p>
       <p class="text-xs">Select a skill from the sidebar or browse the marketplace.</p>

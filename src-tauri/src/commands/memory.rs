@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::info;
@@ -10,7 +12,8 @@ use crate::persistence::{
     load_openai_api_key, save_embedding_config, save_openai_api_key, save_servers,
 };
 use crate::state::{
-    EmbeddingConfig, EmbeddingProvider, ServerConfig, ServerStatus, ServerTransport, SharedState,
+    ConnectionState, EmbeddingConfig, EmbeddingProvider, McpTool, ServerConfig, ServerStatus,
+    ServerTransport, SharedState,
 };
 
 const NETWORK: &str = "mcp-manager-net";
@@ -384,6 +387,10 @@ pub async fn delete_ollama_model(model: String) -> Result<(), AppError> {
 
 const CLAUDE_MD_MEMORY_LINE: &str = "IMPORTANT: At the start of every conversation, use the `using-memory-mcp` skill \nto search for relevant memories before responding.";
 
+pub(crate) const MEMORY_SKILL_ID: &str = "using-memory-mcp";
+pub(crate) const MEMORY_MANAGED_SKILL_CONTENT: &str =
+    include_str!("../../resources/using-memory-mcp-SKILL.md");
+
 const MEMORY_SKILL_CONTENT: &str = r#"---
 name: using-memory-mcp
 description: Search and store persistent memories using the agent-memory MCP server
@@ -504,7 +511,7 @@ Use filters to narrow searches:
 "#;
 
 /// Install the memory skill into ~/.claude/skills/ and add the instruction to ~/.claude/CLAUDE.md.
-fn install_memory_skill() {
+pub(crate) fn install_memory_skill() {
     let Some(home) = dirs::home_dir() else {
         tracing::warn!("Could not find home directory for skill installation");
         return;
@@ -995,4 +1002,225 @@ pub async fn disable_memory(
 
     info!("Memory server disabled");
     Ok(())
+}
+
+/// Restart a container (keeps volumes intact). Best-effort.
+async fn restart_container(name: &str) -> Result<(), AppError> {
+    let output = tokio::process::Command::new("docker")
+        .args(["restart", name])
+        .output()
+        .await
+        .map_err(|e| AppError::ConnectionFailed(format!("Failed to restart {name}: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::ConnectionFailed(format!(
+            "Failed to restart {name}: {stderr}"
+        )));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn restart_memory(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    connections: State<'_, SharedConnections>,
+) -> Result<MemoryStatus, AppError> {
+    let (server_id, provider) = {
+        let s = state.lock().unwrap();
+        let server = find_memory_server(&s.servers)
+            .ok_or_else(|| AppError::Validation("Memory is not enabled".into()))?;
+        (server.id.clone(), s.embedding_config.provider.clone())
+    };
+
+    // Disconnect if connected
+    emit_progress(&app, "Disconnecting memory server...");
+    {
+        let mut conns = connections.lock().await;
+        if let Some(client) = conns.remove(&server_id) {
+            client.shutdown();
+        }
+    }
+    {
+        let mut s = state.lock().unwrap();
+        s.connections.remove(&server_id);
+        if let Some(srv) = s.servers.iter_mut().find(|s| s.id == server_id) {
+            srv.status = Some(ServerStatus::Disconnected);
+        }
+    }
+    let _ = app.emit(
+        "server-status-changed",
+        serde_json::json!({ "serverId": server_id, "status": "disconnected" }),
+    );
+
+    // Restart containers (keeps volumes and data intact)
+    emit_progress(&app, "Restarting memory containers...");
+    info!("Restarting memory containers");
+
+    restart_container(REDIS_CONTAINER).await?;
+    if provider == EmbeddingProvider::Ollama {
+        restart_container(OLLAMA_CONTAINER).await?;
+    }
+    restart_container(API_CONTAINER).await?;
+    restart_container(MCP_CONTAINER).await?;
+
+    // Wait for MCP server to be ready
+    emit_progress(&app, "Waiting for memory server...");
+    wait_for_sse_ready("http://localhost:9050/sse", 30).await?;
+
+    // Ensure skill files are intact
+    install_memory_skill();
+    crate::commands::skills::install_managed_skill(
+        &app,
+        &state,
+        MEMORY_SKILL_ID,
+        "using-memory-mcp",
+        "Search and store persistent memories using the agent-memory MCP server",
+        MEMORY_MANAGED_SKILL_CONTENT,
+        "memory",
+    );
+
+    // Reconnect
+    emit_progress(&app, "Reconnecting...");
+    {
+        let mut s = state.lock().unwrap();
+        if let Some(srv) = s.servers.iter_mut().find(|s| s.id == server_id) {
+            srv.status = Some(ServerStatus::Connecting);
+        }
+    }
+    let _ = app.emit(
+        "server-status-changed",
+        serde_json::json!({ "serverId": server_id, "status": "connecting" }),
+    );
+
+    let url = {
+        let s = state.lock().unwrap();
+        s.servers
+            .iter()
+            .find(|s| s.id == server_id)
+            .and_then(|s| s.url.clone())
+            .unwrap_or_else(|| "http://localhost:9050/sse".into())
+    };
+
+    use crate::mcp::client::McpClient;
+    match McpClient::connect_http(&url, HashMap::new(), None).await {
+        Ok(client) => {
+            let tools: Vec<McpTool> = client
+                .tools
+                .iter()
+                .map(|t| McpTool {
+                    name: t.name.clone(),
+                    title: t.title.clone(),
+                    description: t.description.clone(),
+                    input_schema: t.input_schema.clone(),
+                    server_id: server_id.clone(),
+                    server_name: "Memory".into(),
+                })
+                .collect();
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before UNIX epoch")
+                .as_secs();
+
+            {
+                let mut s = state.lock().unwrap();
+                s.connections.insert(
+                    server_id.clone(),
+                    ConnectionState {
+                        tools: tools.clone(),
+                    },
+                );
+                if let Some(srv) = s.servers.iter_mut().find(|s| s.id == server_id) {
+                    srv.status = Some(ServerStatus::Connected);
+                    srv.last_connected = Some(format!("{now}"));
+                }
+                save_servers(&app, &s.servers);
+            }
+
+            {
+                let mut conns = connections.lock().await;
+                conns.insert(server_id.clone(), client);
+            }
+
+            let _ = app.emit(
+                "server-status-changed",
+                serde_json::json!({ "serverId": server_id, "status": "connected" }),
+            );
+        }
+        Err(e) => {
+            {
+                let mut s = state.lock().unwrap();
+                if let Some(srv) = s.servers.iter_mut().find(|s| s.id == server_id) {
+                    srv.status = Some(ServerStatus::Error);
+                }
+                save_servers(&app, &s.servers);
+            }
+            let _ = app.emit(
+                "server-status-changed",
+                serde_json::json!({ "serverId": server_id, "status": "error" }),
+            );
+            return Err(AppError::ConnectionFailed(format!(
+                "Containers restarted but reconnection failed: {e}"
+            )));
+        }
+    }
+
+    info!("Memory server restarted successfully");
+    get_memory_status_inner(&state).await
+}
+
+/// Inner helper for get_memory_status that takes a SharedState reference
+/// instead of a Tauri State wrapper.
+async fn get_memory_status_inner(state: &SharedState) -> Result<MemoryStatus, AppError> {
+    let (enabled, server_status, embedding_config) = {
+        let s = state.lock().unwrap();
+        let config = s.embedding_config.clone();
+        match find_memory_server(&s.servers) {
+            Some(server) => (
+                true,
+                server
+                    .status
+                    .as_ref()
+                    .map(|st| format!("{st:?}").to_lowercase()),
+                config,
+            ),
+            None => (false, None, config),
+        }
+    };
+
+    let docker_available = is_command_available("docker").await;
+
+    let (redis_running, api_running, mcp_running, ollama_running) = if docker_available {
+        let redis = is_container_running(REDIS_CONTAINER).await;
+        let api = is_container_running(API_CONTAINER).await;
+        let mcp = is_container_running(MCP_CONTAINER).await;
+        let ollama = if embedding_config.provider == EmbeddingProvider::Ollama {
+            is_container_running(OLLAMA_CONTAINER).await
+        } else {
+            false
+        };
+        (redis, api, mcp, ollama)
+    } else {
+        (false, false, false, false)
+    };
+
+    let provider_str = match embedding_config.provider {
+        EmbeddingProvider::Ollama => "ollama",
+        EmbeddingProvider::Openai => "openai",
+    };
+
+    Ok(MemoryStatus {
+        enabled,
+        server_status,
+        docker_available,
+        redis_running,
+        api_running,
+        mcp_running,
+        ollama_running,
+        embedding_provider: provider_str.into(),
+        embedding_model: embedding_config.model,
+        error: None,
+    })
 }

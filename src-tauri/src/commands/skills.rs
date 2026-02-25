@@ -253,6 +253,59 @@ pub fn uninstall_managed_skill(
 }
 
 // ---------------------------------------------------------------------------
+// Startup reconciliation — ensure managed skills exist for enabled features
+// ---------------------------------------------------------------------------
+
+/// Reconcile managed skills on startup: if a feature (memory, discovery) is
+/// enabled in state but the corresponding managed skill entry is missing,
+/// install it. This handles users who enabled features before managed skills
+/// were introduced.
+pub fn reconcile_managed_skills(app: &AppHandle, state: &SharedState) {
+    use crate::commands::discovery::{DISCOVERY_SKILL_CONTENT, DISCOVERY_SKILL_ID};
+    use crate::commands::memory::{MEMORY_MANAGED_SKILL_CONTENT, MEMORY_SKILL_ID};
+
+    let (memory_enabled, discovery_enabled) = {
+        let s = state.lock().unwrap();
+        let mem = s
+            .servers
+            .iter()
+            .any(|srv| srv.managed_by.as_deref() == Some("memory"));
+        let disc = s.tool_discovery_enabled;
+        (mem, disc)
+    };
+
+    if memory_enabled {
+        // Ensure the Claude Code SKILL.md file exists on disk
+        crate::commands::memory::install_memory_skill();
+
+        // Ensure the managed skill entry exists in state
+        install_managed_skill(
+            app,
+            state,
+            MEMORY_SKILL_ID,
+            "using-memory-mcp",
+            "Search and store persistent memories using the agent-memory MCP server",
+            MEMORY_MANAGED_SKILL_CONTENT,
+            "memory",
+        );
+        info!("Reconciled memory managed skill");
+    }
+
+    if discovery_enabled {
+        install_managed_skill(
+            app,
+            state,
+            DISCOVERY_SKILL_ID,
+            "using-discovery",
+            "Find and use MCP tools through the discovery endpoint",
+            DISCOVERY_SKILL_CONTENT,
+            "discovery",
+        );
+        info!("Reconciled discovery managed skill");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Management commands
 // ---------------------------------------------------------------------------
 

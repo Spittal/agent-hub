@@ -286,6 +286,42 @@ Write Vue that would make Evan You happy. Write Rust that would make one of the 
 - Keep frontend types in sync with Rust structs — don't define fields the backend never sends
 - Split large views into sub-components when they exceed ~200 lines — e.g., `SettingsView.vue` delegates to `SettingsIntegrations.vue`, `SettingsProxy.vue`, `SettingsMemory.vue`
 
+### Vue Router — Work With It, Not Against It
+The URL is the source of truth for what's selected/displayed. Don't duplicate router state in Pinia stores.
+
+- **Parameterized routes for detail views**: Use `/servers/:id`, `/skills/:id`, `/plugins/:id`. Detail views read `route.params.id` via `useRoute()` — never store a `selectedXxxId` ref in Pinia.
+- **`<router-link>` for sidebar items**: Sidebar items must be `<router-link :to="'/servers/' + id">`, not `<div @click>` with manual `router.push()`. This gives you `active-class` and `exact-active-class` for free — no manual `:class` bindings comparing store state.
+- **`active-class` for highlighting**: Use `active-class="bg-surface-2"` on `<router-link>` elements. Vue Router automatically applies this class when the route matches. No watcher hacks needed.
+- **Navigate by URL after mutations**: After creating/installing an item, `router.push('/servers/' + newId)`. After deleting/uninstalling, `router.push('/servers')` to show the placeholder. Don't set store selection state and then navigate to a generic route.
+- **Pinia stores hold data, not navigation state**: Stores own the data arrays (`servers`, `installedSkills`, `installedPlugins`), loading/error state, and action methods. They do NOT own `selectedXxxId`, `selectXxx()`, or `clearSelection()` — that's the router's job.
+- **Fetch on route change**: If a detail view needs to load additional data when the selection changes (e.g., skill content), use `watch(route.params.id, ...)` with `{ immediate: true }` in the detail view — not in the store's select function.
+
+### Pinia — Work With It, Not Against It
+Pinia is not Vuex. It deliberately allows direct state mutations and doesn't enforce a mutations/actions split. Understand what Pinia gives you and use it — don't reimplement it, but also don't over-abstract.
+
+**Store structure — actions own async and coordinated state transitions:**
+- Async operations (API calls, `invoke()`) belong in store actions, not composables. An action should manage its own loading/error state alongside the request. See `registry.ts` `search()` and `tools.ts` `fetchTools()` as the gold standard.
+- Don't create "state bag" stores (just refs, no actions) with logic externalized to composables — that splits the domain logic from the state it operates on. If a composable is mutating 5+ store refs across an async flow, that logic belongs in the store as an action.
+- Simple direct mutations (`store.query = value`, `store.selectedItem = item`) are fine and idiomatic Pinia — don't wrap every ref in a setter action.
+
+**Derived state — use computed (getters):**
+- If state can be computed from other state, make it a `computed` in the store, not a separate ref. See `tools.ts` `filteredTools` — it derives from `tools` + `searchQuery` and never needs manual updating.
+- Pinia getters can't take parameters. For filtered views like `logsForServer(id)`, a plain method is acceptable. Don't force a computed that returns a function — it loses caching anyway.
+
+**What stores own vs what they don't:**
+- Stores own: domain data, loading/error state for that domain, async actions (fetch, create, update, delete), computed derived state.
+- Stores do NOT own: navigation state (that's Vue Router), UI-local state like `confirmingDelete`, `activeTab`, form field values (those are component refs), debounce timers, scroll position.
+- Composables are for UI-level concerns: debouncing search input, infinite scroll detection, formatting display values, event listener lifecycle. They can call store actions but shouldn't orchestrate multi-ref state transitions that the store should own.
+
+**`storeToRefs` for destructuring:**
+- Always use `storeToRefs()` when destructuring reactive state from a store. Plain destructuring (`const { items } = store`) loses reactivity. Actions don't need `storeToRefs` — destructure them directly.
+
+**`$patch` for batch updates:**
+- When an action updates multiple refs at once, consider `store.$patch({ items, total, hasMore, offset })`. This emits a single reactive notification instead of one per ref. Not critical (Vue batches synchronous updates anyway) but cleaner for large state transitions.
+
+**No persistence plugin needed:**
+- App state loads from the Rust backend on startup (`loadServers`, `loadInstalled`). UI-transient state (search queries, filters, scroll position) should reset on app restart. Don't add `pinia-plugin-persistedstate` or `tauri-plugin-pinia` unless a specific use case demands it.
+
 ### Naming
 - Rust crate: `mcp-manager` (binary) / commands in snake_case
 - Vue components: PascalCase filenames

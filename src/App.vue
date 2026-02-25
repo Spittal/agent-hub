@@ -163,8 +163,8 @@ onMounted(async () => {
           </router-link>
           <router-link
             to="/settings"
-            class="flex items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-surface-2"
-            :class="$route.path === '/settings' ? 'text-text-primary' : 'text-text-muted hover:text-text-secondary'"
+            class="flex items-center gap-2 px-3 py-2 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
+            active-class="bg-surface-2 text-text-secondary"
           >
             Settings
           </router-link>

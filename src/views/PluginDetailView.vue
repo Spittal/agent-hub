@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { usePluginsStore } from '@/stores/plugins';
 import { storeToRefs } from 'pinia';
 
+const route = useRoute();
+const router = useRouter();
 const store = usePluginsStore();
-const { selectedPluginId, installedPlugins } = storeToRefs(store);
+const { installedPlugins } = storeToRefs(store);
+
+const selectedPluginId = computed(() => route.params.id as string | undefined ?? null);
 
 const selectedPlugin = computed(() =>
   installedPlugins.value.find(p => p.id === selectedPluginId.value)
@@ -35,6 +40,7 @@ async function onUninstall() {
   try {
     await store.uninstallPlugin(selectedPlugin.value.id);
     confirmUninstall.value = false;
+    router.push('/plugins');
   } catch (e) {
     error.value = `Uninstall failed: ${e}`;
     uninstalling.value = false;
@@ -176,7 +182,7 @@ const categoryIcons: Record<string, string> = {
     </div>
   </div>
 
-  <div v-else-if="!selectedPluginId" class="flex h-full items-center justify-center text-text-muted">
+  <div v-else class="flex h-full items-center justify-center text-text-muted">
     <div class="text-center">
       <p class="mb-1 text-sm">No plugin selected</p>
       <p class="text-xs">Select a plugin from the sidebar or browse to add one.</p>

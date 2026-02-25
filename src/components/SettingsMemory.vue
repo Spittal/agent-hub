@@ -168,6 +168,7 @@ async function toggle() {
 }
 
 const retrying = ref(false);
+const restarting = ref(false);
 
 async function retryConnection() {
   if (!memoryServer.value) return;
@@ -176,6 +177,24 @@ async function retryConnection() {
     await store.connectServer(memoryServer.value.id);
   } finally {
     retrying.value = false;
+  }
+}
+
+async function restartMemory() {
+  restarting.value = true;
+  error.value = null;
+  progress.value = null;
+  try {
+    await invoke('restart_memory');
+    await store.loadServers();
+    store.autoConnectServers();
+    skillsStore.loadInstalled();
+    await fetchStatus();
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    restarting.value = false;
+    progress.value = null;
   }
 }
 
@@ -296,7 +315,21 @@ onUnmounted(() => {
 
         <!-- Services status when enabled -->
         <div v-if="status.enabled && !toggling" class="border-t border-border/50 px-3 py-2.5 space-y-1.5">
-          <span class="text-[10px] font-medium text-text-muted uppercase tracking-wide">Services</span>
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-medium text-text-muted uppercase tracking-wide">Services</span>
+            <button
+              class="rounded bg-surface-3 px-2 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-50"
+              :disabled="restarting"
+              @click="restartMemory"
+            >
+              {{ restarting ? 'Restarting...' : 'Restart' }}
+            </button>
+          </div>
+          <!-- Restart progress -->
+          <div v-if="restarting && progress" class="flex items-center gap-1.5 text-[10px] text-text-secondary">
+            <span class="h-1 w-1 animate-pulse rounded-full bg-accent" />
+            {{ progressText }}
+          </div>
           <div class="space-y-1">
             <div class="flex items-center gap-2 text-[11px]">
               <span

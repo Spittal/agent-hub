@@ -38,8 +38,7 @@ async function handleInstall(server: RegistryServerSummary) {
       const created = await registryStore.installServer(server.id);
       await serversStore.loadServers();
       serversStore.connectServer(created.id);
-      serversStore.selectServer(created.id);
-      router.push('/');
+      router.push('/servers/' + created.id);
     } catch (e) {
       console.error('Quick install failed:', e);
       modalServerId.value = server.id;
@@ -66,7 +65,7 @@ function parseHeaders(raw: string): Record<string, string> {
 }
 
 async function onManualSubmit(values: { name: string; transport: 'stdio' | 'http'; command: string; args: string; url: string; headers: string; env: Record<string, string> }) {
-  serversStore.addServer({
+  const server = await serversStore.addServer({
     name: values.name.trim(),
     transport: values.transport,
     enabled: true,
@@ -82,7 +81,7 @@ async function onManualSubmit(values: { name: string; transport: 'stdio' | 'http
         }),
   });
 
-  router.push('/');
+  router.push('/servers/' + server.id);
 }
 </script>
 

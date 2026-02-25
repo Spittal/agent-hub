@@ -8,8 +8,9 @@ use crate::mcp::proxy::ProxyState;
 use crate::persistence::save_tool_discovery;
 use crate::state::SharedState;
 
-const DISCOVERY_SKILL_ID: &str = "using-discovery";
-const DISCOVERY_SKILL_CONTENT: &str = include_str!("../../resources/using-discovery-SKILL.md");
+pub(crate) const DISCOVERY_SKILL_ID: &str = "using-discovery";
+pub(crate) const DISCOVERY_SKILL_CONTENT: &str =
+    include_str!("../../resources/using-discovery-SKILL.md");
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
