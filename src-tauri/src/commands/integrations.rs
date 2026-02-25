@@ -67,7 +67,7 @@ fn get_tool_definitions(home: &Path) -> Vec<ToolDef> {
         ToolDef {
             id: "claude-code".into(),
             name: "Claude Code".into(),
-            config_path: home.join(".claude").join("mcp.json"),
+            config_path: home.join(".claude.json"),
             detection_paths: vec![home.join(".claude")],
             config_format: ConfigFormat::McpServers,
         },
@@ -1011,18 +1011,30 @@ fn write_mcp_servers_config(
 ) -> Result<(), AppError> {
     let entries = connected_proxy_urls(app, port, tool_id);
 
-    let mut mcp_servers = serde_json::Map::new();
-    for (name, url) in entries {
-        mcp_servers.insert(name, serde_json::json!({ "type": "http", "url": url }));
-    }
-
-    // Read existing config to preserve other top-level keys
+    // Read existing config to preserve other top-level keys and non-proxy MCP servers
     let mut config = if path.exists() {
         let content = std::fs::read_to_string(path)?;
         serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
+
+    // Start from existing mcpServers, removing old proxy entries but keeping user-added ones
+    let mut mcp_servers = config
+        .get("mcpServers")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    mcp_servers.retain(|key, value| {
+        let url = value.get("url").and_then(|u| u.as_str()).unwrap_or("");
+        !(key == "mcp-manager" || is_proxy_url(url))
+    });
+
+    // Add our current entries
+    for (name, url) in entries {
+        mcp_servers.insert(name, serde_json::json!({ "type": "http", "url": url }));
+    }
 
     config["mcpServers"] = serde_json::Value::Object(mcp_servers);
 
