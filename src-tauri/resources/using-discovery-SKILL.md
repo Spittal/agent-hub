@@ -1,94 +1,108 @@
 ---
 name: using-discovery
-description: Find and use MCP tools through the discovery endpoint. When you need
-  a tool you don't have, use discover_tools to search, list_servers to browse, and
-  call_tool to execute. Use this skill whenever you're looking for capabilities,
-  searching for tools, or need to call a tool on a specific server.
+description: You have MCP tools from a server called "mcp-manager" (or
+  "user-mcp-manager") that give you access to ALL other connected MCP servers
+  through three tools — discover_tools, call_tool, and list_servers. USE THESE
+  TOOLS whenever you need a capability you don't currently have (Slack, GitHub,
+  databases, etc.), want to search for available tools, or need to call a tool on
+  a remote server. These tools are already in your tool list — just call them.
 ---
 
-# Tool Discovery — Find and Use Any MCP Tool
+# MCP Manager — Tool Discovery
 
-You have access to a **tool discovery** endpoint that lets you search across all connected MCP servers and call any tool by name — without needing a separate MCP connection for each server.
+You already have three MCP tools from a server called **mcp-manager** (it may also appear as **user-mcp-manager** depending on your client). These tools let you search for and call tools on ANY connected MCP server — Slack, GitHub, databases, file systems, anything the user has set up.
 
-## The Three Tools
+**You do not need separate MCP connections for each server.** The mcp-manager app acts as a proxy: your single connection to it gives you access to every server it manages.
 
-### 1. `list_servers` — See what's connected
+## Your Three Tools
 
-Call this first to get an overview of all available MCP servers and their tools.
+You have these tools right now in your MCP tool list. Call them directly.
 
-```json
-// No arguments needed
-{}
-```
+### `discover_tools` — Search for a tool by keyword
 
-Returns a list of servers with their IDs, names, and tool names. Use the `server_id` from results when calling `call_tool`.
-
-### 2. `discover_tools` — Search for the right tool
-
-When you need a capability but don't know which tool provides it, search by keyword.
+This is your **go-to first step** when you need a capability. It searches across ALL connected servers and returns matching tools with their full input schemas.
 
 ```json
 {
-  "query": "send message slack"
+  "query": "slack message send"
 }
 ```
 
-Returns matching tools with their **full input schemas** so you can call them immediately. Results include the `server_id` and `tool_name` you need for `call_tool`.
+Returns: tool name, server_id, server_name, description, and **full inputSchema** — everything you need to call it immediately via `call_tool`.
 
-### 3. `call_tool` — Execute a tool on a specific server
+Search tips:
+- Use broad terms: `"slack"` finds all Slack tools, `"database"` finds all DB tools
+- Multiple words are AND-matched: `"slack message"` finds tools matching both terms
+- If no results, try fewer or different keywords
 
-Once you know the server and tool name (from `discover_tools` or `list_servers`), call it:
+### `call_tool` — Execute a tool on a specific server
+
+Once you have a `server_id` and `tool_name` from `discover_tools`, call the tool:
 
 ```json
 {
-  "server_id": "abc-123",
+  "server_id": "the-server-id-from-discover",
   "tool_name": "send_message",
   "arguments": {
     "channel": "#general",
-    "text": "Hello from the agent!"
+    "text": "Hello!"
   }
 }
 ```
 
-## Workflow
+The `arguments` object must match the tool's `inputSchema` from the discover results.
 
-**When you need a tool you don't have:**
+### `list_servers` — See all connected servers
 
-1. `discover_tools(query="what you need")` — find matching tools across all servers
-2. Read the returned input schema to understand required arguments
-3. `call_tool(server_id, tool_name, arguments)` — execute it
+Call with no arguments to get an overview of every connected server and its tools:
 
-**When you want to explore what's available:**
-
-1. `list_servers()` — see all connected servers and tool names
-2. `discover_tools(query="specific capability")` — get full schemas for tools you're interested in
-3. `call_tool(...)` — use what you find
-
-## Examples
-
-**"I need to search Slack messages"**
-```
-discover_tools(query="search slack messages")
-→ Found: slack_search_messages on server "slack-mcp" (id: abc-123)
-call_tool(server_id="abc-123", tool_name="slack_search_messages", arguments={"query": "project update"})
+```json
+{}
 ```
 
-**"What databases can I query?"**
+Returns: server IDs, names, tool counts, and tool name lists. Useful when you want to browse rather than search.
+
+## When to Use This
+
+**Any time you think "I don't have a tool for X" — you probably do.** Call `discover_tools` before giving up or telling the user you can't do something.
+
+Common situations:
+- User asks you to send a Slack message, create a GitHub issue, query a database, etc.
+- You need to interact with a service but don't see a direct tool for it
+- You want to know what tools and servers are available
+
+## Step-by-Step Workflow
+
+1. **Call `discover_tools`** with keywords describing what you need
+2. **Read the results** — pick the right tool, note its `server_id` and `tool_name`
+3. **Read the `inputSchema`** — understand required vs optional arguments
+4. **Call `call_tool`** with the server_id, tool_name, and arguments
+5. **Use the result** — tool output is returned directly to you
+
+## Example: Sending a Slack Message
+
 ```
-discover_tools(query="database query sql")
-→ Found: execute_query on server "postgres-mcp" (id: def-456)
+Step 1: discover_tools(query="slack send message")
+→ Found: send_message on server "slack-mcp" (server_id: "abc-123")
+  inputSchema: { channel: string (required), text: string (required) }
+
+Step 2: call_tool(server_id="abc-123", tool_name="send_message", arguments={"channel": "#general", "text": "Hello from the agent!"})
+→ Message sent successfully
 ```
 
-**"Create a GitHub issue"**
+## Example: Searching for Database Tools
+
 ```
-discover_tools(query="github issue create")
-→ Found: create_issue on server "github-mcp" (id: ghi-789)
-call_tool(server_id="ghi-789", tool_name="create_issue", arguments={"repo": "org/repo", "title": "Bug report", "body": "Details..."})
+Step 1: discover_tools(query="database query")
+→ Found: execute_query on server "postgres-mcp" (server_id: "def-456")
+  inputSchema: { sql: string (required), params: array (optional) }
+
+Step 2: call_tool(server_id="def-456", tool_name="execute_query", arguments={"sql": "SELECT * FROM users LIMIT 5"})
+→ [query results]
 ```
 
-## Tips
+## Troubleshooting
 
-- **Search broadly first**, then narrow down. `discover_tools(query="email")` is better than guessing a specific tool name.
-- **Check the input schema** returned by `discover_tools` — it tells you exactly what arguments are required vs optional.
-- **`list_servers` is cheap** — call it when you want a quick overview without searching for anything specific.
-- If `discover_tools` returns no results, try **different keywords** or use `list_servers` to see what's actually connected.
+- **Can't find the tools?** Look for a server named "mcp-manager" or "user-mcp-manager" in your MCP connections. The three tools (`discover_tools`, `call_tool`, `list_servers`) come from that server.
+- **`discover_tools` returns nothing?** Try broader keywords, or call `list_servers` to see what's actually connected. The user may not have the server you're looking for.
+- **`call_tool` fails with "not connected"?** The target server may have disconnected. Tell the user the server needs to be reconnected in MCP Manager.
