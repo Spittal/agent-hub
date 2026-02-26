@@ -906,6 +906,7 @@ fn connected_proxy_urls(app: &AppHandle, port: u16, tool_id: &str) -> Vec<(Strin
     s.servers
         .iter()
         .filter(|srv| srv.status == Some(ServerStatus::Connected))
+        .filter(|srv| srv.managed_by.is_none())
         .map(|srv| {
             (
                 srv.name.clone(),
@@ -977,6 +978,14 @@ pub async fn enable_integration(
 
         let mut imported = 0;
         for server in candidates {
+            // Never overwrite a managed server (owned by Memory, plugins, etc.)
+            if s.servers.iter().any(|srv| srv.name == server.name && srv.managed_by.is_some()) {
+                info!(
+                    "Skipping import of '{}' — managed by existing subsystem",
+                    server.name
+                );
+                continue;
+            }
             if let Some(idx) = s.servers.iter().position(|srv| srv.name == server.name) {
                 info!(
                     "Replacing existing server '{}' with import from {}",

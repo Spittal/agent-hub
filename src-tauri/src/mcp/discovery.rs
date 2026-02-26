@@ -255,6 +255,9 @@ fn handle_discover_tools(id: Option<Value>, arguments: &Value, state: &ProxyAppS
         if srv.status != Some(crate::state::ServerStatus::Connected) {
             continue;
         }
+        if srv.managed_by.is_some() {
+            continue;
+        }
 
         let conn = match s.connections.get(&srv.id) {
             Some(c) => c,
@@ -328,6 +331,9 @@ fn handle_list_servers(id: Option<Value>, state: &ProxyAppState) -> Value {
 
     for srv in &s.servers {
         if srv.status != Some(crate::state::ServerStatus::Connected) {
+            continue;
+        }
+        if srv.managed_by.is_some() {
             continue;
         }
 
@@ -424,26 +430,38 @@ async fn handle_call_tool(
         .cloned()
         .unwrap_or(serde_json::json!({}));
 
-    // Look up server name
-    let server_name = {
+    // Look up server name and managed status
+    let (server_name, is_managed) = {
         let app_state = state.app_handle.state::<SharedState>();
         let s = app_state.lock().unwrap();
-        s.servers
-            .iter()
-            .find(|srv| srv.id == server_id)
-            .map(|srv| srv.name.clone())
-    };
-
-    let server_name = match server_name {
-        Some(name) => name,
-        None => {
-            return make_error_response(
-                id,
-                -32602,
-                &format!("No server found with ID: {server_id}"),
-            );
+        match s.servers.iter().find(|srv| srv.id == server_id) {
+            Some(srv) => (srv.name.clone(), srv.managed_by.is_some()),
+            None => {
+                return make_error_response(
+                    id,
+                    -32602,
+                    &format!("No server found with ID: {server_id}"),
+                );
+            }
         }
     };
+
+    if is_managed {
+        return serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": format!(
+                        "Server '{}' is managed externally and its tools should be called directly through its own MCP connection, not via discovery.",
+                        server_name
+                    )
+                }],
+                "isError": true
+            }
+        });
+    }
 
     // Get the MCP client
     let connections = state.app_handle.state::<SharedConnections>();

@@ -59,6 +59,23 @@ pub fn load_servers(app: &AppHandle) -> Vec<ServerConfig> {
         info!("Migrated legacy 'managed' field to 'managed_by'");
         save_servers(app, &servers);
     }
+
+    // One-time fixup: restore managed_by on Memory servers corrupted by integration import
+    let mut fixed = false;
+    for server in &mut servers {
+        if server.name == "Memory"
+            && server.managed_by.is_none()
+            && server.url.as_deref().map_or(false, |u| u.contains("localhost:9050"))
+        {
+            server.managed_by = Some("memory".into());
+            fixed = true;
+            info!("Restored managed_by='memory' on corrupted Memory server");
+        }
+    }
+    if fixed {
+        save_servers(app, &servers);
+    }
+
     info!("Loaded {} server configs from store", servers.len());
     servers
 }
