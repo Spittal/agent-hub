@@ -57,6 +57,11 @@ impl ProxyState {
     pub async fn port(&self) -> u16 {
         self.inner.read().await.port
     }
+
+    /// Synchronous port access for use in non-async contexts (e.g. exit handler).
+    pub fn port_blocking(&self) -> u16 {
+        self.inner.blocking_read().port
+    }
 }
 
 /// Shared state passed into axum handlers.

@@ -24,6 +24,15 @@ enum ConfigFormat {
     CodexToml,
 }
 
+/// How to write/remove MCP entries for this tool.
+#[derive(Debug, Clone)]
+enum ConfigStrategy {
+    /// Write directly to a JSON/TOML config file (default for most tools).
+    ManagedFile,
+    /// Use `claude mcp add-json` / `claude mcp remove` CLI commands.
+    ClaudeCli,
+}
+
 /// Internal definition for a supported AI tool.
 struct ToolDef {
     id: String,
@@ -31,6 +40,7 @@ struct ToolDef {
     config_path: PathBuf,
     detection_paths: Vec<PathBuf>,
     config_format: ConfigFormat,
+    config_strategy: ConfigStrategy,
 }
 
 /// An existing MCP server found in a tool's config file.
@@ -70,6 +80,7 @@ fn get_tool_definitions(home: &Path) -> Vec<ToolDef> {
             config_path: home.join(".claude.json"),
             detection_paths: vec![home.join(".claude")],
             config_format: ConfigFormat::McpServers,
+            config_strategy: ConfigStrategy::ClaudeCli,
         },
         ToolDef {
             id: "cursor".into(),
@@ -80,6 +91,7 @@ fn get_tool_definitions(home: &Path) -> Vec<ToolDef> {
                 PathBuf::from("/Applications/Cursor.app"),
             ],
             config_format: ConfigFormat::McpServers,
+            config_strategy: ConfigStrategy::ManagedFile,
         },
         ToolDef {
             id: "claude-desktop".into(),
@@ -87,6 +99,7 @@ fn get_tool_definitions(home: &Path) -> Vec<ToolDef> {
             config_path: home.join("Library/Application Support/Claude/claude_desktop_config.json"),
             detection_paths: vec![PathBuf::from("/Applications/Claude.app")],
             config_format: ConfigFormat::McpServers,
+            config_strategy: ConfigStrategy::ManagedFile,
         },
     ];
 
@@ -109,6 +122,7 @@ fn get_tool_definitions(home: &Path) -> Vec<ToolDef> {
             PathBuf::from("/Applications/Windsurf.app"),
         ],
         config_format: ConfigFormat::McpServers,
+        config_strategy: ConfigStrategy::ManagedFile,
     });
 
     tools.push(ToolDef {
@@ -118,14 +132,7 @@ fn get_tool_definitions(home: &Path) -> Vec<ToolDef> {
         // Always "installed" — just check if the file exists
         detection_paths: vec![home.join(".mcp.json")],
         config_format: ConfigFormat::McpServers,
-    });
-
-    tools.push(ToolDef {
-        id: "claude-code-user".into(),
-        name: "Claude Code (User)".into(),
-        config_path: home.join(".claude.json"),
-        detection_paths: vec![home.join(".claude.json")],
-        config_format: ConfigFormat::McpServers,
+        config_strategy: ConfigStrategy::ManagedFile,
     });
 
     tools.push(ToolDef {
@@ -134,6 +141,7 @@ fn get_tool_definitions(home: &Path) -> Vec<ToolDef> {
         config_path: home.join(".config/opencode/opencode.json"),
         detection_paths: vec![home.join(".config/opencode")],
         config_format: ConfigFormat::OpenCode,
+        config_strategy: ConfigStrategy::ManagedFile,
     });
 
     tools.push(ToolDef {
@@ -142,6 +150,7 @@ fn get_tool_definitions(home: &Path) -> Vec<ToolDef> {
         config_path: home.join(".codex/config.toml"),
         detection_paths: vec![home.join(".codex")],
         config_format: ConfigFormat::CodexToml,
+        config_strategy: ConfigStrategy::ManagedFile,
     });
 
     tools.push(ToolDef {
@@ -153,6 +162,7 @@ fn get_tool_definitions(home: &Path) -> Vec<ToolDef> {
             PathBuf::from("/Applications/Zed.app"),
         ],
         config_format: ConfigFormat::Zed,
+        config_strategy: ConfigStrategy::ManagedFile,
     });
 
     tools
@@ -792,6 +802,71 @@ fn home_dir() -> Result<PathBuf, AppError> {
     })
 }
 
+/// Run a `claude mcp <subcommand>` and return stdout.
+fn run_claude_mcp(args: &[&str]) -> Result<String, AppError> {
+    let output = std::process::Command::new("claude")
+        .arg("mcp")
+        .args(args)
+        .env_remove("CLAUDECODE")
+        .output()
+        .map_err(|e| {
+            warn!("Failed to run claude CLI: {e}");
+            AppError::DependencyNotFound(
+                "Claude Code CLI not found. Install Claude Code and ensure `claude` is in your PATH.".to_string(),
+            )
+        })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if !output.status.success() {
+        let msg = if stderr.is_empty() { stdout.clone() } else { stderr };
+        return Err(AppError::Protocol(format!("claude mcp failed: {msg}")));
+    }
+
+    Ok(stdout)
+}
+
+/// Write proxy config for Claude Code via `claude mcp add-json --scope user`.
+fn write_cli_config(app: &AppHandle, port: u16, tool_id: &str) -> Result<(), AppError> {
+    let entries = connected_proxy_urls(app, port, tool_id);
+
+    // Remove existing proxy entry first (ignore errors — may not exist)
+    let _ = run_claude_mcp(&["remove", "--scope", "user", "mcp-manager"]);
+
+    for (name, url) in &entries {
+        let json = serde_json::json!({
+            "type": "http",
+            "url": url
+        });
+        let json_str = serde_json::to_string(&json)
+            .map_err(|e| AppError::Protocol(format!("Failed to serialize config: {e}")))?;
+
+        // For discovery mode: name is "mcp-manager"
+        // For per-server mode: name is the server name
+        let server_name = if entries.len() == 1 { "mcp-manager" } else { name.as_str() };
+
+        run_claude_mcp(&["add-json", "--scope", "user", server_name, &json_str])?;
+        info!("Added MCP server '{server_name}' to Claude Code via CLI");
+    }
+
+    Ok(())
+}
+
+/// Remove proxy entries from Claude Code via `claude mcp remove`.
+fn remove_cli_entries(app: &AppHandle, port: u16, tool_id: &str) -> Result<(), AppError> {
+    // Remove the discovery entry
+    let _ = run_claude_mcp(&["remove", "--scope", "user", "mcp-manager"]);
+
+    // Also remove any per-server entries that look like ours
+    let entries = connected_proxy_urls(app, port, tool_id);
+    for (name, _) in &entries {
+        let _ = run_claude_mcp(&["remove", "--scope", "user", name]);
+    }
+
+    Ok(())
+}
+
 /// Build a single discovery endpoint URL entry.
 fn discovery_proxy_url(port: u16, tool_id: &str) -> (String, String) {
     (
@@ -919,7 +994,7 @@ pub async fn enable_integration(
     }
 
     // Write proxy entries for all currently connected servers
-    write_managed_config(&app, &tool.config_path, port, &tool.id, &tool.config_format)?;
+    write_managed_config(&app, &tool.config_path, port, &tool.id, &tool.config_format, &tool.config_strategy)?;
 
     info!(
         "Enabled MCP Manager integration for {} (port {})",
@@ -940,11 +1015,13 @@ pub async fn enable_integration(
 #[tauri::command]
 pub async fn disable_integration(
     app: AppHandle,
+    proxy_state: State<'_, ProxyState>,
     state: State<'_, SharedState>,
     id: String,
 ) -> Result<AiToolInfo, AppError> {
     let home = home_dir()?;
     let tool = find_tool_def(&home, &id)?;
+    let port = proxy_state.port().await;
 
     // Remove from enabled list
     {
@@ -953,7 +1030,7 @@ pub async fn disable_integration(
         save_enabled_integrations(&app, &s.enabled_integrations);
     }
 
-    if !tool.config_path.exists() {
+    if !tool.config_path.exists() && matches!(tool.config_strategy, ConfigStrategy::ManagedFile) {
         return Ok(AiToolInfo {
             id: tool.id,
             name: tool.name,
@@ -965,8 +1042,8 @@ pub async fn disable_integration(
         });
     }
 
-    // Remove our proxy entries from the config file
-    remove_managed_entries(&tool.config_path, &tool.config_format)?;
+    // Remove our proxy entries from the config file (or CLI)
+    remove_managed_entries(&app, &tool.config_path, port, &tool.id, &tool.config_format, &tool.config_strategy)?;
 
     info!("Disabled MCP Manager integration for {}", tool.name);
 
@@ -994,12 +1071,16 @@ fn write_managed_config(
     port: u16,
     tool_id: &str,
     format: &ConfigFormat,
+    strategy: &ConfigStrategy,
 ) -> Result<(), AppError> {
-    match format {
-        ConfigFormat::McpServers => write_mcp_servers_config(app, path, port, tool_id),
-        ConfigFormat::OpenCode => write_opencode_config(app, path, port, tool_id),
-        ConfigFormat::Zed => write_zed_config(app, path, port, tool_id),
-        ConfigFormat::CodexToml => write_codex_config(app, path, port, tool_id),
+    match strategy {
+        ConfigStrategy::ClaudeCli => write_cli_config(app, port, tool_id),
+        ConfigStrategy::ManagedFile => match format {
+            ConfigFormat::McpServers => write_mcp_servers_config(app, path, port, tool_id),
+            ConfigFormat::OpenCode => write_opencode_config(app, path, port, tool_id),
+            ConfigFormat::Zed => write_zed_config(app, path, port, tool_id),
+            ConfigFormat::CodexToml => write_codex_config(app, path, port, tool_id),
+        },
     }
 }
 
@@ -1164,12 +1245,22 @@ fn write_codex_config(
 // ---------------------------------------------------------------------------
 
 /// Remove all proxy entries from a tool's config file.
-fn remove_managed_entries(path: &Path, format: &ConfigFormat) -> Result<(), AppError> {
-    match format {
-        ConfigFormat::McpServers => remove_mcp_servers_entries(path),
-        ConfigFormat::OpenCode => remove_opencode_entries(path),
-        ConfigFormat::Zed => remove_zed_entries(path),
-        ConfigFormat::CodexToml => remove_codex_entries(path),
+fn remove_managed_entries(
+    app: &AppHandle,
+    path: &Path,
+    port: u16,
+    tool_id: &str,
+    format: &ConfigFormat,
+    strategy: &ConfigStrategy,
+) -> Result<(), AppError> {
+    match strategy {
+        ConfigStrategy::ClaudeCli => remove_cli_entries(app, port, tool_id),
+        ConfigStrategy::ManagedFile => match format {
+            ConfigFormat::McpServers => remove_mcp_servers_entries(path),
+            ConfigFormat::OpenCode => remove_opencode_entries(path),
+            ConfigFormat::Zed => remove_zed_entries(path),
+            ConfigFormat::CodexToml => remove_codex_entries(path),
+        },
     }
 }
 
@@ -1514,7 +1605,7 @@ fn write_native_codex(servers: &[ServerConfig], path: &Path) -> Result<(), AppEr
 
 /// Restore all enabled integration configs to native (non-proxy) server entries.
 /// Called on app exit so configs work without MCP Manager running.
-pub fn restore_all_integration_configs(app: &AppHandle) -> Result<(), AppError> {
+pub fn restore_all_integration_configs(app: &AppHandle, port: u16) -> Result<(), AppError> {
     let home = home_dir()?;
     let tools = get_tool_definitions(&home);
 
@@ -1525,14 +1616,27 @@ pub fn restore_all_integration_configs(app: &AppHandle) -> Result<(), AppError> 
     };
 
     for tool in tools {
-        if !enabled_ids.contains(&tool.id) || !tool.config_path.exists() {
+        if !enabled_ids.contains(&tool.id) {
             continue;
         }
 
-        if let Err(e) = write_native_config(&servers, &tool.config_path, &tool.config_format) {
-            warn!("Failed to restore native config for {}: {e}", tool.name);
-        } else {
-            info!("Restored native config for {}", tool.name);
+        let result = match tool.config_strategy {
+            ConfigStrategy::ClaudeCli => {
+                // CLI-managed: just remove our entry. The proxy is shutting down,
+                // and servers live in MCP Manager, not in Claude Code's config.
+                remove_cli_entries(app, port, &tool.id)
+            }
+            ConfigStrategy::ManagedFile => {
+                if !tool.config_path.exists() {
+                    continue;
+                }
+                write_native_config(&servers, &tool.config_path, &tool.config_format)
+            }
+        };
+
+        match result {
+            Ok(()) => info!("Restored config for {}", tool.name),
+            Err(e) => warn!("Failed to restore config for {}: {e}", tool.name),
         }
     }
 
@@ -1557,7 +1661,7 @@ pub fn update_all_integration_configs(app: &AppHandle, port: u16) -> Result<(), 
         }
 
         if let Err(e) =
-            write_managed_config(app, &tool.config_path, port, &tool.id, &tool.config_format)
+            write_managed_config(app, &tool.config_path, port, &tool.id, &tool.config_format, &tool.config_strategy)
         {
             warn!("Failed to update config for {}: {e}", tool.name);
         } else {

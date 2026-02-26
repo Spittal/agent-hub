@@ -160,7 +160,8 @@ pub fn run() {
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
             // Restore native configs so AI tools work without MCP Manager running
-            if let Err(e) = commands::integrations::restore_all_integration_configs(app_handle) {
+            let port = app_handle.state::<mcp::proxy::ProxyState>().port_blocking();
+            if let Err(e) = commands::integrations::restore_all_integration_configs(app_handle, port) {
                 tracing::warn!("Failed to restore integration configs on exit: {e}");
             } else {
                 info!("Restored integration configs to native mode on exit");
