@@ -88,7 +88,7 @@ pub(crate) async fn handle_discovery_post(
                         }
                     },
                     "serverInfo": {
-                        "name": "MCP Manager — Tool Discovery",
+                        "name": "Agent Hub — Tool Discovery",
                         "version": env!("CARGO_PKG_VERSION")
                     }
                 }

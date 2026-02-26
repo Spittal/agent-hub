@@ -204,10 +204,10 @@ pub fn install_managed_skill(
             return;
         }
         let skill = InstalledSkill {
-            id: format!("mcp-manager/{skill_id}"),
+            id: format!("agent-hub/{skill_id}"),
             name: name.to_string(),
             skill_id: skill_id.to_string(),
-            source: "mcp-manager".to_string(),
+            source: "agent-hub".to_string(),
             description: description.to_string(),
             content: content.to_string(),
             enabled: true,

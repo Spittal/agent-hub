@@ -224,7 +224,7 @@ fn parse_mcp_servers(path: &Path) -> (bool, u16, Vec<ExistingMcpServer>) {
         let entry_url = value.get("url").and_then(|u| u.as_str()).unwrap_or("");
 
         // Detect our proxy entries
-        if key == "mcp-manager" || is_proxy_url(entry_url) {
+        if key == DISCOVERY_SERVER_NAME || is_proxy_url(entry_url) {
             enabled = true;
             if port == 0 {
                 port = extract_port_from_url(entry_url);
@@ -494,8 +494,8 @@ fn import_mcp_servers(path: &Path) -> Result<Vec<ServerConfig>, AppError> {
     };
     let mut result = Vec::new();
     for (key, value) in servers_obj {
-        // Skip legacy mcp-manager entry and proxy URLs
-        if key == "mcp-manager" {
+        // Skip discovery entry and proxy URLs
+        if key == DISCOVERY_SERVER_NAME {
             continue;
         }
         let entry_url = value.get("url").and_then(|u| u.as_str()).unwrap_or("");
@@ -832,9 +832,9 @@ fn write_cli_config(app: &AppHandle, port: u16, tool_id: &str) -> Result<(), App
     let entries = connected_proxy_urls(app, port, tool_id);
 
     // Remove existing proxy entry first (ignore errors — may not exist)
-    let _ = run_claude_mcp(&["remove", "--scope", "user", "mcp-manager"]);
+    let _ = run_claude_mcp(&["remove", "--scope", "user", DISCOVERY_SERVER_NAME]);
 
-    // Remove non-proxy entries that were imported into MCP Manager.
+    // Remove non-proxy entries that were imported into Agent Hub.
     // Reading .claude.json to find them (same McpServers format).
     let home = home_dir()?;
     let config_path = home.join(".claude.json");
@@ -855,12 +855,8 @@ fn write_cli_config(app: &AppHandle, port: u16, tool_id: &str) -> Result<(), App
         let json_str = serde_json::to_string(&json)
             .map_err(|e| AppError::Protocol(format!("Failed to serialize config: {e}")))?;
 
-        // For discovery mode: name is "mcp-manager"
-        // For per-server mode: name is the server name
-        let server_name = if entries.len() == 1 { "mcp-manager" } else { name.as_str() };
-
-        run_claude_mcp(&["add-json", "--scope", "user", server_name, &json_str])?;
-        info!("Added MCP server '{server_name}' to Claude Code via CLI");
+        run_claude_mcp(&["add-json", "--scope", "user", name, &json_str])?;
+        info!("Added MCP server '{name}' to Claude Code via CLI");
     }
 
     Ok(())
@@ -869,7 +865,7 @@ fn write_cli_config(app: &AppHandle, port: u16, tool_id: &str) -> Result<(), App
 /// Remove proxy entries from Claude Code via `claude mcp remove`.
 fn remove_cli_entries(app: &AppHandle, port: u16, tool_id: &str) -> Result<(), AppError> {
     // Remove the discovery entry
-    let _ = run_claude_mcp(&["remove", "--scope", "user", "mcp-manager"]);
+    let _ = run_claude_mcp(&["remove", "--scope", "user", DISCOVERY_SERVER_NAME]);
 
     // Also remove any per-server entries that look like ours
     let entries = connected_proxy_urls(app, port, tool_id);
@@ -880,19 +876,26 @@ fn remove_cli_entries(app: &AppHandle, port: u16, tool_id: &str) -> Result<(), A
     Ok(())
 }
 
+/// The name used for the discovery endpoint in AI tool configs.
+const DISCOVERY_SERVER_NAME: &str = "agent-hub-discovery-mode";
+
 /// Build a single discovery endpoint URL entry.
 fn discovery_proxy_url(port: u16, tool_id: &str) -> (String, String) {
     (
-        "mcp-manager".to_string(),
+        DISCOVERY_SERVER_NAME.to_string(),
         format!("http://localhost:{port}/mcp/discovery?client={tool_id}"),
     )
 }
 
 /// Build proxy URL entries for all currently connected servers.
-/// In discovery mode, returns a single entry pointing to the discovery endpoint.
+/// In discovery mode, returns the discovery endpoint + direct entries for managed servers.
+/// In per-server mode, returns direct entries for non-managed servers only
+/// (managed servers always get their own direct entry).
 fn connected_proxy_urls(app: &AppHandle, port: u16, tool_id: &str) -> Vec<(String, String)> {
     let state = app.state::<SharedState>();
     let s = state.lock().unwrap();
+
+    let mut entries = Vec::new();
 
     if s.tool_discovery_enabled {
         // Always expose the discovery endpoint when discovery mode is on.
@@ -900,20 +903,32 @@ fn connected_proxy_urls(app: &AppHandle, port: u16, tool_id: &str) -> Vec<(Strin
         // list_servers / discover_tools responses. Gating on has_connected
         // causes a startup race: proxy starts before servers reconnect,
         // writing empty mcpServers to integration configs.
-        return vec![discovery_proxy_url(port, tool_id)];
-    }
-
-    s.servers
-        .iter()
-        .filter(|srv| srv.status == Some(ServerStatus::Connected))
-        .filter(|srv| srv.managed_by.is_none())
-        .map(|srv| {
-            (
+        entries.push(discovery_proxy_url(port, tool_id));
+    } else {
+        // Per-server mode: direct entries for non-managed servers
+        for srv in s.servers.iter().filter(|srv| {
+            srv.status == Some(ServerStatus::Connected) && srv.managed_by.is_none()
+        }) {
+            entries.push((
                 srv.name.clone(),
                 format!("http://localhost:{port}/mcp/{}?client={tool_id}", srv.id),
-            )
-        })
-        .collect()
+            ));
+        }
+    }
+
+    // Managed servers (e.g. Memory) always get their own direct proxy entry
+    // regardless of discovery mode — they're excluded from discovery's
+    // call_tool/discover_tools and should be called directly by AI tools.
+    for srv in s.servers.iter().filter(|srv| {
+        srv.status == Some(ServerStatus::Connected) && srv.managed_by.is_some()
+    }) {
+        entries.push((
+            srv.name.clone(),
+            format!("http://localhost:{port}/mcp/{}?client={tool_id}", srv.id),
+        ));
+    }
+
+    entries
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,7 +1034,7 @@ pub async fn enable_integration(
     write_managed_config(&app, &tool.config_path, port, &tool.id, &tool.config_format, &tool.config_strategy)?;
 
     info!(
-        "Enabled MCP Manager integration for {} (port {})",
+        "Enabled Agent Hub integration for {} (port {})",
         tool.name, port
     );
 
@@ -1067,7 +1082,7 @@ pub async fn disable_integration(
     // Remove our proxy entries from the config file (or CLI)
     remove_managed_entries(&app, &tool.config_path, port, &tool.id, &tool.config_format, &tool.config_strategy)?;
 
-    info!("Disabled MCP Manager integration for {}", tool.name);
+    info!("Disabled Agent Hub integration for {}", tool.name);
 
     let (_, _, existing_servers) = parse_config(&tool.config_path, &tool.config_format);
 
@@ -1123,7 +1138,7 @@ fn write_mcp_servers_config(
     };
 
     // Replace mcpServers with only our proxy entries.
-    // Imported servers are now managed by MCP Manager and proxied through it —
+    // Imported servers are now managed by Agent Hub and proxied through it —
     // keeping originals would cause duplicate connections from the AI tool.
     let mut mcp_servers = serde_json::Map::new();
     for (name, url) in entries {
@@ -1285,7 +1300,7 @@ fn remove_mcp_servers_entries(path: &Path) -> Result<(), AppError> {
         let proxy_keys: Vec<String> = servers
             .iter()
             .filter(|(k, v)| {
-                *k == "mcp-manager"
+                *k == DISCOVERY_SERVER_NAME
                     || v.get("url")
                         .and_then(|u| u.as_str())
                         .map(is_proxy_url)
@@ -1401,7 +1416,7 @@ fn remove_codex_entries(path: &Path) -> Result<(), AppError> {
 
 /// Write original (non-proxy) server configs to a tool's config file.
 /// This is the inverse of `write_managed_config`: it replaces proxy entries
-/// with the actual server configurations so they work without MCP Manager.
+/// with the actual server configurations so they work without Agent Hub.
 fn write_native_config(
     servers: &[ServerConfig],
     path: &Path,
@@ -1613,11 +1628,131 @@ fn write_native_codex(servers: &[ServerConfig], path: &Path) -> Result<(), AppEr
 }
 
 // ---------------------------------------------------------------------------
+// Config previews — pure functions that generate the MCP section as a string
+// ---------------------------------------------------------------------------
+
+/// A preview of what Agent Hub writes to a tool's config.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedConfigPreview {
+    pub tool_id: String,
+    pub tool_name: String,
+    pub config_path: String,
+    pub content: String,
+    pub strategy: String,
+}
+
+/// Generate a preview of the mcpServers JSON section.
+fn preview_mcp_servers_config(entries: &[(String, String)]) -> String {
+    let mut mcp_servers = serde_json::Map::new();
+    for (name, url) in entries {
+        mcp_servers.insert(
+            name.clone(),
+            serde_json::json!({ "type": "http", "url": url }),
+        );
+    }
+    let wrapper = serde_json::json!({ "mcpServers": mcp_servers });
+    serde_json::to_string_pretty(&wrapper).unwrap_or_default()
+}
+
+/// Generate a preview of the OpenCode JSON section.
+fn preview_opencode_config(entries: &[(String, String)]) -> String {
+    let mut mcp = serde_json::Map::new();
+    for (name, url) in entries {
+        mcp.insert(
+            name.clone(),
+            serde_json::json!({ "type": "remote", "url": url }),
+        );
+    }
+    let wrapper = serde_json::json!({ "mcp": mcp });
+    serde_json::to_string_pretty(&wrapper).unwrap_or_default()
+}
+
+/// Generate a preview of the Zed JSON section.
+fn preview_zed_config(entries: &[(String, String)]) -> String {
+    let mut context_servers = serde_json::Map::new();
+    for (name, url) in entries {
+        context_servers.insert(name.clone(), serde_json::json!({ "url": url }));
+    }
+    let wrapper = serde_json::json!({ "context_servers": context_servers });
+    serde_json::to_string_pretty(&wrapper).unwrap_or_default()
+}
+
+/// Generate a preview of the Codex TOML section.
+fn preview_codex_config(entries: &[(String, String)]) -> String {
+    let mut mcp_servers = toml::map::Map::new();
+    for (name, url) in entries {
+        let mut entry = toml::map::Map::new();
+        entry.insert("url".into(), toml::Value::String(url.clone()));
+        mcp_servers.insert(name.clone(), toml::Value::Table(entry));
+    }
+    let wrapper = toml::Value::Table({
+        let mut t = toml::map::Map::new();
+        t.insert("mcp_servers".into(), toml::Value::Table(mcp_servers));
+        t
+    });
+    toml::to_string_pretty(&wrapper).unwrap_or_default()
+}
+
+/// Generate the preview string for a given tool's format.
+fn preview_for_format(
+    entries: &[(String, String)],
+    format: &ConfigFormat,
+) -> String {
+    match format {
+        ConfigFormat::McpServers => preview_mcp_servers_config(entries),
+        ConfigFormat::OpenCode => preview_opencode_config(entries),
+        ConfigFormat::Zed => preview_zed_config(entries),
+        ConfigFormat::CodexToml => preview_codex_config(entries),
+    }
+}
+
+#[tauri::command]
+pub async fn get_managed_config_previews(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    proxy_state: State<'_, ProxyState>,
+) -> Result<Vec<ManagedConfigPreview>, AppError> {
+    let home = home_dir()?;
+    let tools = get_tool_definitions(&home);
+    let port = proxy_state.port().await;
+
+    let enabled_ids: Vec<String> = {
+        let s = state.lock().unwrap();
+        s.enabled_integrations.clone()
+    };
+
+    let mut previews = Vec::new();
+    for tool in tools {
+        if !enabled_ids.contains(&tool.id) {
+            continue;
+        }
+
+        let entries = connected_proxy_urls(&app, port, &tool.id);
+        let content = preview_for_format(&entries, &tool.config_format);
+        let strategy = match tool.config_strategy {
+            ConfigStrategy::ManagedFile => "file",
+            ConfigStrategy::ClaudeCli => "cli",
+        };
+
+        previews.push(ManagedConfigPreview {
+            tool_id: tool.id,
+            tool_name: tool.name,
+            config_path: tool.config_path.display().to_string(),
+            content,
+            strategy: strategy.to_string(),
+        });
+    }
+
+    Ok(previews)
+}
+
+// ---------------------------------------------------------------------------
 // Sync enabled configs with current connected servers
 // ---------------------------------------------------------------------------
 
 /// Restore all enabled integration configs to native (non-proxy) server entries.
-/// Called on app exit so configs work without MCP Manager running.
+/// Called on app exit so configs work without Agent Hub running.
 pub fn restore_all_integration_configs(app: &AppHandle, port: u16) -> Result<(), AppError> {
     let home = home_dir()?;
     let tools = get_tool_definitions(&home);
@@ -1636,7 +1771,7 @@ pub fn restore_all_integration_configs(app: &AppHandle, port: u16) -> Result<(),
         let result = match tool.config_strategy {
             ConfigStrategy::ClaudeCli => {
                 // CLI-managed: just remove our entry. The proxy is shutting down,
-                // and servers live in MCP Manager, not in Claude Code's config.
+                // and servers live in Agent Hub, not in Claude Code's config.
                 remove_cli_entries(app, port, &tool.id)
             }
             ConfigStrategy::ManagedFile => {

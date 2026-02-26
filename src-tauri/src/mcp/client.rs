@@ -114,7 +114,7 @@ impl McpClient {
                 sampling: None,
             },
             client_info: ClientInfo {
-                name: "MCP Manager".to_string(),
+                name: "Agent Hub".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
         };

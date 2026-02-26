@@ -27,7 +27,7 @@ pub struct BufferedLog {
 pub struct AppState {
     pub servers: Vec<ServerConfig>,
     pub connections: HashMap<String, ConnectionState>,
-    /// IDs of AI tool integrations that MCP Manager is configured to manage.
+    /// IDs of AI tool integrations that Agent Hub is configured to manage.
     pub enabled_integrations: Vec<String>,
     pub embedding_config: EmbeddingConfig,
     /// Logs emitted before the frontend event listener is ready.

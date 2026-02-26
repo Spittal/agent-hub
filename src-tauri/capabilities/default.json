@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for MCP Manager",
+  "description": "Default capabilities for Agent Hub",
   "windows": [
     "main"
   ],

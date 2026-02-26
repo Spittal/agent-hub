@@ -109,11 +109,11 @@ async fn handle_callback(
     Html(
         r#"<!DOCTYPE html>
 <html>
-<head><title>MCP Manager</title></head>
+<head><title>Agent Hub</title></head>
 <body style="font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #1a1a2e; color: #e0e0e0;">
 <div style="text-align: center;">
 <h1 style="font-size: 1.5rem; margin-bottom: 0.5rem;">Authorization Complete</h1>
-<p>You can close this tab and return to MCP Manager.</p>
+<p>You can close this tab and return to Agent Hub.</p>
 </div>
 </body>
 </html>"#,

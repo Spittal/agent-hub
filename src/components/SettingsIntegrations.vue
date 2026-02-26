@@ -94,7 +94,7 @@ onMounted(() => {
   <div>
     <h2 class="mb-1 text-xs font-medium text-text-primary">Managed MCP Configs</h2>
     <p class="mb-4 text-xs text-text-secondary">
-      Discover MCP servers configured in your AI tools and import them into MCP Manager.
+      Discover MCP servers configured in your AI tools and import them into Agent Hub.
     </p>
 
     <div v-if="error" class="mb-3 rounded bg-status-error/10 px-3 py-2 text-xs text-status-error">

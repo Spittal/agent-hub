@@ -330,7 +330,7 @@ pub struct MarketplaceCache {
 impl MarketplaceCache {
     pub fn new() -> Self {
         let http = reqwest::Client::builder()
-            .user_agent("mcp-manager")
+            .user_agent("agent-hub")
             .build()
             .expect("reqwest client should build");
         Self {

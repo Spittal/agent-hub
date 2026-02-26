@@ -314,7 +314,7 @@ async fn handle_mcp_post(
                         }
                     },
                     "serverInfo": {
-                        "name": format!("MCP Manager — {server_name}"),
+                        "name": format!("Agent Hub — {server_name}"),
                         "version": env!("CARGO_PKG_VERSION")
                     }
                 }

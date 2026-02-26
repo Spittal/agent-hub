@@ -29,6 +29,22 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // TODO(2026-03-12): Remove migration after 2 weeks
+            // Migrate store from old bundle ID (com.mcpmanager.app → com.agenthub.app)
+            let old_store_dir = dirs::home_dir()
+                .map(|h| h.join("Library/Application Support/com.mcpmanager.app"));
+            if let Some(ref old_dir) = old_store_dir {
+                if let Ok(new_dir) = app.path().app_data_dir() {
+                    let old_file = old_dir.join("config.json");
+                    let new_file = new_dir.join("config.json");
+                    if old_file.exists() && !new_file.exists() {
+                        let _ = std::fs::create_dir_all(&new_dir);
+                        let _ = std::fs::copy(&old_file, &new_file);
+                        info!("Migrated store from old bundle ID");
+                    }
+                }
+            }
+
             // Load persisted server configs, enabled integrations, and stats
             let servers = persistence::load_servers(app.handle());
             let enabled_integrations = persistence::load_enabled_integrations(app.handle());
@@ -145,6 +161,7 @@ pub fn run() {
             commands::data_management::import_memories,
             commands::data_management::format_memory_data,
             commands::registry::fetch_readme,
+            commands::integrations::get_managed_config_previews,
             commands::discovery::get_discovery_mode,
             commands::discovery::set_discovery_mode,
             commands::plugins::list_available_plugins,
@@ -159,7 +176,7 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
-            // Restore native configs so AI tools work without MCP Manager running
+            // Restore native configs so AI tools work without Agent Hub running
             let port = app_handle.state::<mcp::proxy::ProxyState>().port_blocking();
             if let Err(e) = commands::integrations::restore_all_integration_configs(app_handle, port) {
                 tracing::warn!("Failed to restore integration configs on exit: {e}");

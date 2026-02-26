@@ -1,4 +1,4 @@
-# MCP Manager - Project Guidelines
+# Agent Hub - Project Guidelines
 
 ## Project Overview
 
@@ -150,7 +150,7 @@ Binary naming for sidecars requires platform-specific suffixes (e.g., `my-binary
 
 ### Project Structure Convention
 ```
-mcp-manager/
+agent-hub/
 ├── src/                    # Vue 3 frontend
 │   ├── assets/
 │   ├── components/
@@ -224,7 +224,7 @@ All MCP communication uses JSON-RPC 2.0:
 ## Development Commands
 ```bash
 # Create project
-npm create tauri-app@latest mcp-manager -- --template vue-ts
+npm create tauri-app@latest agent-hub -- --template vue-ts
 
 # Development
 pnpm tauri dev          # Start dev server with hot reload
@@ -323,7 +323,7 @@ Pinia is not Vuex. It deliberately allows direct state mutations and doesn't enf
 - App state loads from the Rust backend on startup (`loadServers`, `loadInstalled`). UI-transient state (search queries, filters, scroll position) should reset on app restart. Don't add `pinia-plugin-persistedstate` or `tauri-plugin-pinia` unless a specific use case demands it.
 
 ### Naming
-- Rust crate: `mcp-manager` (binary) / commands in snake_case
+- Rust crate: `agent-hub` (binary) / commands in snake_case
 - Vue components: PascalCase filenames
 - Pinia stores: `useXxxStore` pattern
 - Tauri commands: snake_case in Rust, camelCase when invoked from JS

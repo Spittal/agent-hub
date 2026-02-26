@@ -139,7 +139,7 @@ pub async fn dynamic_register(
         "redirect_uris": [redirect_uri],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
-        "client_name": "MCP Manager",
+        "client_name": "Agent Hub",
         "token_endpoint_auth_method": "none",
     });
 

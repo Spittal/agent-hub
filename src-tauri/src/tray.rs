@@ -68,7 +68,7 @@ fn build_tray_menu(
 
     builder = builder.separator();
 
-    let show = MenuItemBuilder::new("Show MCP Manager")
+    let show = MenuItemBuilder::new("Show Agent Hub")
         .id("show")
         .build(app)?;
     builder = builder.item(&show);

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { invoke } from '@tauri-apps/api/core';
 import { useServersStore } from '@/stores/servers';
 import { storeToRefs } from 'pinia';
 import ToolBrowser from '@/components/ToolBrowser.vue';
@@ -12,6 +13,17 @@ const route = useRoute();
 const router = useRouter();
 const store = useServersStore();
 const { servers, lastError, oauthStatus } = storeToRefs(store);
+
+const discoveryEnabled = ref(false);
+
+onMounted(async () => {
+  try {
+    const status = await invoke<{ enabled: boolean }>('get_discovery_mode');
+    discoveryEnabled.value = status.enabled;
+  } catch {
+    // Non-critical
+  }
+});
 
 const selectedServerId = computed(() => route.params.id as string | undefined ?? null);
 
@@ -254,6 +266,16 @@ function formatTime(unixSecs: number): string {
             Check the server's documentation for setup instructions, then use
             <router-link :to="`/edit/${selectedServer!.id}`" class="text-accent hover:text-accent-hover">Edit</router-link>
             to update the server settings.
+          </p>
+        </div>
+
+        <!-- Managed server: direct connection info -->
+        <div v-if="selectedServer.managedBy && discoveryEnabled" class="mb-4 rounded border border-accent/20 bg-accent/5 px-3 py-2.5">
+          <p class="text-[11px] leading-relaxed text-text-secondary">
+            This server is managed by <strong class="text-text-primary">{{ managedByLabel(selectedServer.managedBy) }}</strong>
+            and connects directly to AI tools — its tools won't appear under discovery mode's
+            <code class="rounded bg-surface-2 px-1 text-[10px]">discover_tools</code> or
+            <code class="rounded bg-surface-2 px-1 text-[10px]">call_tool</code>.
           </p>
         </div>
 

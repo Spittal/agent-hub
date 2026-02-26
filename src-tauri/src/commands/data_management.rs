@@ -169,7 +169,7 @@ pub async fn format_memory_data(confirmation: String) -> Result<(), AppError> {
 
     info!("Formatting all memory data via FLUSHDB");
     let output = tokio::process::Command::new("docker")
-        .args(["exec", "mcp-manager-redis", "redis-cli", "FLUSHDB"])
+        .args(["exec", "agent-hub-redis", "redis-cli", "FLUSHDB"])
         .output()
         .await
         .map_err(|e| AppError::ConnectionFailed(format!("Failed to flush Redis: {e}")))?;
@@ -184,7 +184,7 @@ pub async fn format_memory_data(confirmation: String) -> Result<(), AppError> {
     // Restart API and MCP containers so they recreate their search indexes
     info!("Restarting memory containers to rebuild indexes");
     let _ = tokio::process::Command::new("docker")
-        .args(["restart", "mcp-manager-api", "mcp-manager-mcp"])
+        .args(["restart", "agent-hub-api", "agent-hub-mcp"])
         .output()
         .await;
 

@@ -146,6 +146,26 @@ pub fn load_installed_skills(app: &AppHandle) -> Vec<InstalledSkill> {
     }
     if migrated {
         info!("Migrated legacy skill 'managed' field to 'managed_by'");
+    }
+
+    // TODO(2026-03-12): Remove migration after 2 weeks
+    // Rename mcp-manager → agent-hub in persisted skill IDs/source
+    let mut renamed = false;
+    for skill in &mut skills {
+        if skill.source == "mcp-manager" {
+            skill.source = "agent-hub".to_string();
+            renamed = true;
+        }
+        if skill.id.starts_with("mcp-manager/") {
+            skill.id = skill.id.replace("mcp-manager/", "agent-hub/");
+            renamed = true;
+        }
+    }
+    if renamed {
+        info!("Migrated skill IDs/source from mcp-manager to agent-hub");
+    }
+
+    if migrated || renamed {
         save_installed_skills(app, &skills);
     }
     skills

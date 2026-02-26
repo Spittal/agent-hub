@@ -16,11 +16,11 @@ use crate::state::{
     ServerTransport, SharedState,
 };
 
-const NETWORK: &str = "mcp-manager-net";
-const REDIS_CONTAINER: &str = "mcp-manager-redis";
-const OLLAMA_CONTAINER: &str = "mcp-manager-ollama";
-const API_CONTAINER: &str = "mcp-manager-api";
-const MCP_CONTAINER: &str = "mcp-manager-mcp";
+const NETWORK: &str = "agent-hub-net";
+const REDIS_CONTAINER: &str = "agent-hub-redis";
+const OLLAMA_CONTAINER: &str = "agent-hub-ollama";
+const API_CONTAINER: &str = "agent-hub-api";
+const MCP_CONTAINER: &str = "agent-hub-mcp";
 const MEMORY_IMAGE: &str = "redislabs/agent-memory-server:latest";
 
 #[derive(Serialize)]
@@ -165,7 +165,7 @@ fn append_env(args: &mut Vec<String>, env: &std::collections::HashMap<String, St
     }
 }
 
-const REDIS_VOLUME: &str = "mcp-manager-redis";
+const REDIS_VOLUME: &str = "agent-hub-redis";
 
 /// Migrate an existing Redis container's data to a named Docker volume.
 /// If the container exists without a volume mount on /data, we copy the data
@@ -805,7 +805,7 @@ pub async fn enable_memory(
                     "-p",
                     "11434:11434",
                     "-v",
-                    "mcp-manager-ollama:/root/.ollama",
+                    "agent-hub-ollama:/root/.ollama",
                     "ollama/ollama",
                 ]),
             )
