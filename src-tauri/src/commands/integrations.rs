@@ -804,7 +804,8 @@ fn home_dir() -> Result<PathBuf, AppError> {
 
 /// Run a `claude mcp <subcommand>` and return stdout.
 fn run_claude_mcp(args: &[&str]) -> Result<String, AppError> {
-    let output = std::process::Command::new("claude")
+    let claude = super::resolve_claude_binary();
+    let output = std::process::Command::new(&claude)
         .arg("mcp")
         .args(args)
         .env_remove("CLAUDECODE")

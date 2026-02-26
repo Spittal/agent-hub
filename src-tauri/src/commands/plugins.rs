@@ -1,39 +1,9 @@
-use std::path::PathBuf;
-
 use tracing::info;
 
 use crate::error::AppError;
 use crate::state::plugin::{PluginInfo, PluginListOutput};
 
-// ---------------------------------------------------------------------------
-// CLI helper
-// ---------------------------------------------------------------------------
-
-/// Resolve the `claude` binary path.
-///
-/// macOS GUI apps (DMG installs) don't inherit the user's shell PATH, so a bare
-/// `"claude"` lookup fails even when the CLI is installed. Check well-known
-/// locations first, then fall back to a bare name for PATH resolution.
-fn resolve_claude_binary() -> String {
-    let candidates: Vec<PathBuf> = [
-        dirs::home_dir().map(|h| h.join(".local/bin/claude")),
-        Some(PathBuf::from("/usr/local/bin/claude")),
-        Some(PathBuf::from("/opt/homebrew/bin/claude")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-
-    for path in &candidates {
-        if path.exists() {
-            info!("Resolved claude CLI at {}", path.display());
-            return path.to_string_lossy().into_owned();
-        }
-    }
-
-    // Fall back to bare name — works when PATH is inherited (e.g. `pnpm tauri dev`)
-    "claude".to_string()
-}
+use super::resolve_claude_binary;
 
 /// Run a `claude plugin <subcommand>` and return stdout.
 async fn run_claude_plugin(args: &[&str]) -> Result<String, AppError> {
