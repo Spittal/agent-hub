@@ -1,16 +1,19 @@
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State as AxumState};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
+use futures::stream::Stream;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::net::TcpListener;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tokio::time::Instant;
 use tracing::{error, info};
 
@@ -64,10 +67,16 @@ impl ProxyState {
     }
 }
 
+/// Wrapper for the broadcast sender so it can be managed as Tauri state.
+#[derive(Clone)]
+pub struct NotifySender(pub broadcast::Sender<String>);
+
 /// Shared state passed into axum handlers.
 #[derive(Clone)]
 pub(crate) struct ProxyAppState {
     pub(crate) app_handle: AppHandle,
+    /// Broadcast channel for tool list change notifications.
+    pub(crate) notify_tx: broadcast::Sender<String>,
 }
 
 /// Start the MCP proxy HTTP server on a random available port.
@@ -75,14 +84,20 @@ pub async fn start_proxy(
     app_handle: AppHandle,
     proxy_state: ProxyState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (notify_tx, _) = broadcast::channel::<String>(64);
+
+    // Manage the sender as Tauri state so connections.rs can push notifications
+    app_handle.manage(NotifySender(notify_tx.clone()));
+
     let state = ProxyAppState {
         app_handle: app_handle.clone(),
+        notify_tx: notify_tx.clone(),
     };
 
     let app = Router::new()
         .route(
             "/mcp/discovery",
-            post(super::discovery::handle_discovery_post).get(handle_mcp_get),
+            post(super::discovery::handle_discovery_post),
         )
         .route(
             "/mcp/{server_id}",
@@ -148,10 +163,30 @@ async fn bind_preferred_port() -> Result<TcpListener, Box<dyn std::error::Error 
     Ok(TcpListener::bind("127.0.0.1:0").await?)
 }
 
-/// Handle GET requests — spec says server MUST return SSE stream or 405.
-/// We don't support server-initiated streaming, so return 405.
-async fn handle_mcp_get() -> impl IntoResponse {
-    StatusCode::METHOD_NOT_ALLOWED
+/// Handle GET requests — open SSE stream for server-initiated notifications.
+/// Per MCP spec, clients can open a GET to receive `notifications/tools/list_changed`.
+async fn handle_mcp_get(
+    AxumState(state): AxumState<ProxyAppState>,
+    Path(server_id): Path<String>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut rx = state.notify_tx.subscribe();
+    let stream = async_stream::stream! {
+        loop {
+            match rx.recv().await {
+                Ok(changed_id) if changed_id == server_id => {
+                    let notification = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/tools/list_changed"
+                    });
+                    yield Ok(Event::default().data(notification.to_string()));
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Ok(_) => continue, // different server_id, ignore
+            }
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 /// Handle POST requests — per-server JSON-RPC handler.
