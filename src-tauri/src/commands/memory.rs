@@ -676,8 +676,9 @@ pub async fn save_redis_config_cmd(
     state: State<'_, SharedState>,
     config: RedisConfig,
 ) -> Result<(), AppError> {
-    // Validate URL when source is Remote
-    if config.source == RedisSource::Remote {
+    // Validate URL when source is Remote (not required when tunnel is configured)
+    let has_tunnel = config.tunnel_command.as_ref().is_some_and(|c| !c.is_empty());
+    if config.source == RedisSource::Remote && !has_tunnel {
         let url = config.url.as_deref().unwrap_or("");
         if url.is_empty() {
             return Err(AppError::Validation(
@@ -687,6 +688,15 @@ pub async fn save_redis_config_cmd(
         if !url.starts_with("redis://") && !url.starts_with("rediss://") {
             return Err(AppError::Validation(
                 "Redis URL must start with redis:// or rediss://".into(),
+            ));
+        }
+    }
+
+    // Validate tunnel_local_port if set
+    if let Some(port) = config.tunnel_local_port {
+        if port == 0 {
+            return Err(AppError::Validation(
+                "Tunnel local port must be between 1 and 65535".into(),
             ));
         }
     }
@@ -735,13 +745,42 @@ pub async fn enable_memory(
         (s.embedding_config.clone(), s.redis_config.clone())
     };
 
-    // Validate remote URL if needed
-    if redis_config.source == RedisSource::Remote {
+    // Validate remote URL if needed (tunnels don't require a URL — we auto-construct it)
+    let has_tunnel = redis_config.source == RedisSource::Remote
+        && redis_config.tunnel_command.is_some();
+
+    if redis_config.source == RedisSource::Remote && !has_tunnel {
         let url = redis_config.url.as_deref().unwrap_or("");
         if url.is_empty() || (!url.starts_with("redis://") && !url.starts_with("rediss://")) {
             return Err(AppError::Validation(
                 "Configure a valid Redis URL before enabling Memory".into(),
             ));
+        }
+    }
+
+    // Spawn tunnel if configured
+    if has_tunnel {
+        let cmd = redis_config.tunnel_command.as_deref().expect("checked above");
+        emit_progress(&app, "Starting tunnel...");
+        let pid = spawn_tunnel(cmd).await?;
+
+        // Store PID in state for cleanup
+        {
+            let mut s = state.lock().unwrap();
+            s.tunnel_pid = Some(pid);
+        }
+
+        // Wait for the tunnel port to be ready
+        let port = redis_config.tunnel_local_port.unwrap_or(6379);
+        emit_progress(&app, &format!("Waiting for tunnel on port {port}..."));
+        if let Err(e) = wait_for_port(port, 30).await {
+            // Tunnel failed — kill it and clean up
+            kill_tunnel_process(pid);
+            {
+                let mut s = state.lock().unwrap();
+                s.tunnel_pid = None;
+            }
+            return Err(e);
         }
     }
 
@@ -797,6 +836,10 @@ pub async fn enable_memory(
     let mut env = std::collections::HashMap::new();
     let redis_url = if has_local_redis {
         format!("redis://{REDIS_CONTAINER}:6379")
+    } else if has_tunnel {
+        // Tunnel runs on host — Docker containers reach it via host.docker.internal
+        let port = redis_config.tunnel_local_port.unwrap_or(6379);
+        format!("redis://host.docker.internal:{port}")
     } else {
         redis_config.url.clone().expect("validated above")
     };
@@ -962,7 +1005,7 @@ pub async fn disable_memory(
     state: State<'_, SharedState>,
     connections: State<'_, SharedConnections>,
 ) -> Result<(), AppError> {
-    let (provider, server_id, redis_source) = {
+    let (provider, server_id, redis_source, tunnel_pid) = {
         let s = state.lock().unwrap();
         let server = find_memory_server(&s.servers)
             .ok_or_else(|| AppError::Validation("Memory is not enabled".into()))?;
@@ -970,6 +1013,7 @@ pub async fn disable_memory(
             s.embedding_config.provider.clone(),
             server.id.clone(),
             s.redis_config.source.clone(),
+            s.tunnel_pid,
         )
     };
 
@@ -1015,6 +1059,13 @@ pub async fn disable_memory(
 
     if provider == EmbeddingProvider::Ollama {
         stop_container(OLLAMA_CONTAINER).await;
+    }
+
+    // Kill tunnel process if active
+    if let Some(pid) = tunnel_pid {
+        kill_tunnel_process(pid);
+        let mut s = state.lock().unwrap();
+        s.tunnel_pid = None;
     }
 
     // Remove the network (best-effort)

@@ -179,6 +179,15 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
+            // Kill active tunnel process if any
+            {
+                let st = app_handle.state::<state::SharedState>();
+                let s = st.lock().unwrap();
+                if let Some(pid) = s.tunnel_pid {
+                    commands::memory::kill_tunnel_process(pid);
+                }
+            }
+
             // Restore native configs so AI tools work without Agent Hub running
             let port = app_handle.state::<mcp::proxy::ProxyState>().port_blocking();
             if let Err(e) = commands::integrations::restore_all_integration_configs(app_handle, port) {
