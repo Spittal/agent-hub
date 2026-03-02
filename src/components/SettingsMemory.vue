@@ -40,6 +40,9 @@ const redisSource = ref<RedisSource>('local');
 const redisUrl = ref('');
 const redisSaving = ref(false);
 const redisSaved = ref(false);
+const tunnelCommand = ref('');
+const tunnelLocalPort = ref<number | null>(null);
+const showAdvanced = ref(false);
 
 const canEnable = computed(() => {
   if (!status.value) return false;
@@ -84,10 +87,12 @@ const description = computed(() => {
 
 const redisDirty = computed(() => {
   if (!embeddingStatus.value) return false;
-  const saved = embeddingStatus.value.redisConfig;
+  const s = embeddingStatus.value.redisConfig;
   return (
-    redisSource.value !== saved.source ||
-    (redisSource.value === 'remote' && redisUrl.value !== (saved.url ?? ''))
+    redisSource.value !== s.source ||
+    (redisSource.value === 'remote' && redisUrl.value !== (s.url ?? '')) ||
+    (redisSource.value === 'remote' && tunnelCommand.value !== (s.tunnelCommand ?? '')) ||
+    (redisSource.value === 'remote' && (tunnelLocalPort.value ?? null) !== (s.tunnelLocalPort ?? null))
   );
 });
 
@@ -158,6 +163,9 @@ async function fetchEmbeddingConfig() {
     const redis = embeddingStatus.value.redisConfig;
     redisSource.value = redis.source;
     redisUrl.value = redis.url ?? '';
+    tunnelCommand.value = redis.tunnelCommand ?? '';
+    tunnelLocalPort.value = redis.tunnelLocalPort ?? null;
+    showAdvanced.value = !!redis.tunnelCommand;
   } catch {
     // Non-critical, defaults will be used
   }
@@ -282,7 +290,13 @@ async function saveRedisConfig() {
     await invoke('save_redis_config_cmd', {
       config: {
         source: redisSource.value,
-        url: redisSource.value === 'remote' ? redisUrl.value : null,
+        url: redisSource.value === 'remote' ? (redisUrl.value || null) : null,
+        tunnelCommand: redisSource.value === 'remote' && tunnelCommand.value
+          ? tunnelCommand.value
+          : null,
+        tunnelLocalPort: redisSource.value === 'remote' && tunnelLocalPort.value
+          ? tunnelLocalPort.value
+          : null,
       },
     });
     redisSaved.value = true;
@@ -381,6 +395,10 @@ onUnmounted(() => {
               <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-text-muted" />
               <span class="text-text-secondary">Redis (remote)</span>
             </div>
+            <div v-if="status.tunnelRunning" class="flex items-center gap-2 text-[11px]">
+              <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-status-connected" />
+              <span class="text-text-secondary">Tunnel</span>
+            </div>
             <div v-if="status.embeddingProvider === 'ollama'" class="flex items-center gap-2 text-[11px]">
               <span
                 class="h-1.5 w-1.5 shrink-0 rounded-full"
@@ -465,7 +483,46 @@ onUnmounted(() => {
             </p>
           </div>
 
-          <div v-else class="text-[11px] text-text-secondary">
+          <!-- Advanced toggle (only shown when Remote) -->
+          <div v-if="redisSource === 'remote'">
+            <button
+              class="text-[10px] text-text-muted hover:text-text-secondary transition-colors"
+              @click="showAdvanced = !showAdvanced"
+            >
+              {{ showAdvanced ? '&#9660;' : '&#9654;' }} Advanced
+            </button>
+
+            <div v-if="showAdvanced" class="mt-2 space-y-2 rounded bg-surface-0 px-2.5 py-2">
+              <div class="space-y-1">
+                <label class="text-[10px] font-medium text-text-muted">Tunnel command</label>
+                <textarea
+                  v-model="tunnelCommand"
+                  rows="2"
+                  placeholder="gcloud compute ssh bastion --tunnel-through-iap -- -N -L 6379:redis-host:6379"
+                  class="w-full rounded border border-border bg-surface-1 px-2 py-1.5 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none resize-none"
+                />
+                <p class="text-[10px] text-text-muted">
+                  Shell command to run before connecting. Must create a local port forward.
+                </p>
+              </div>
+              <div class="space-y-1">
+                <label class="text-[10px] font-medium text-text-muted">Local port</label>
+                <input
+                  v-model.number="tunnelLocalPort"
+                  type="number"
+                  min="1"
+                  max="65535"
+                  placeholder="6379"
+                  class="w-24 rounded border border-border bg-surface-1 px-2 py-1.5 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+                />
+                <p class="text-[10px] text-text-muted">
+                  Port the tunnel listens on locally. Default: 6379
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="redisSource !== 'remote'" class="text-[11px] text-text-secondary">
             Redis will run as a Docker container on this machine.
           </div>
 

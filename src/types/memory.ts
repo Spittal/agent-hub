@@ -4,6 +4,7 @@ export interface MemoryStatus {
   dockerAvailable: boolean;
   redisRunning: boolean;
   redisSource: string;
+  tunnelRunning: boolean;
   apiRunning: boolean;
   mcpRunning: boolean;
   ollamaRunning: boolean;

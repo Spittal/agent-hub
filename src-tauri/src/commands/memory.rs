@@ -32,6 +32,7 @@ pub struct MemoryStatus {
     pub docker_available: bool,
     pub redis_running: bool,
     pub redis_source: String,
+    pub tunnel_running: bool,
     pub api_running: bool,
     pub mcp_running: bool,
     pub ollama_running: bool,
@@ -1309,10 +1310,11 @@ pub async fn restart_memory(
 /// Inner helper for get_memory_status that takes a SharedState reference
 /// instead of a Tauri State wrapper.
 async fn get_memory_status_inner(state: &SharedState) -> Result<MemoryStatus, AppError> {
-    let (enabled, server_status, embedding_config, redis_config) = {
+    let (enabled, server_status, embedding_config, redis_config, tunnel_pid) = {
         let s = state.lock().unwrap();
         let config = s.embedding_config.clone();
         let redis = s.redis_config.clone();
+        let pid = s.tunnel_pid;
         match find_memory_server(&s.servers) {
             Some(server) => (
                 true,
@@ -1322,8 +1324,9 @@ async fn get_memory_status_inner(state: &SharedState) -> Result<MemoryStatus, Ap
                     .map(|st| format!("{st:?}").to_lowercase()),
                 config,
                 redis,
+                pid,
             ),
-            None => (false, None, config, redis),
+            None => (false, None, config, redis, pid),
         }
     };
 
@@ -1357,12 +1360,21 @@ async fn get_memory_status_inner(state: &SharedState) -> Result<MemoryStatus, Ap
         RedisSource::Remote => "remote",
     };
 
+    // Check if tunnel PID is still alive (signal 0 = just check existence)
+    let tunnel_running = tunnel_pid.map_or(false, |pid| {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map_or(false, |o| o.status.success())
+    });
+
     Ok(MemoryStatus {
         enabled,
         server_status,
         docker_available,
         redis_running,
         redis_source: redis_source.into(),
+        tunnel_running,
         api_running,
         mcp_running,
         ollama_running,

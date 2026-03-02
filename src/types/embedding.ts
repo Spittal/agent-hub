@@ -18,6 +18,8 @@ export type RedisSource = 'local' | 'remote';
 export interface RedisConfig {
   source: RedisSource;
   url: string | null;
+  tunnelCommand: string | null;
+  tunnelLocalPort: number | null;
 }
 
 export interface EmbeddingModelInfo {
