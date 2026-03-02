@@ -46,6 +46,7 @@ pub struct EmbeddingConfigStatus {
     pub config: EmbeddingConfig,
     pub has_openai_key: bool,
     pub pulled_ollama_models: Vec<String>,
+    pub redis_config: RedisConfig,
 }
 
 #[derive(Deserialize)]
@@ -600,9 +601,9 @@ pub async fn get_embedding_config(
     app: AppHandle,
     state: State<'_, SharedState>,
 ) -> Result<EmbeddingConfigStatus, AppError> {
-    let config = {
+    let (config, redis_config) = {
         let s = state.lock().unwrap();
-        s.embedding_config.clone()
+        (s.embedding_config.clone(), s.redis_config.clone())
     };
 
     let has_openai_key = load_openai_api_key(&app).is_some();
@@ -612,6 +613,7 @@ pub async fn get_embedding_config(
         config,
         has_openai_key,
         pulled_ollama_models,
+        redis_config,
     })
 }
 

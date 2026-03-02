@@ -160,25 +160,61 @@ pub async fn import_memories(app: tauri::AppHandle, path: String) -> Result<usiz
 
 /// Delete ALL memories via redis-cli FLUSHDB. Requires confirmation string "format my data".
 #[tauri::command]
-pub async fn format_memory_data(confirmation: String) -> Result<(), AppError> {
+pub async fn format_memory_data(
+    confirmation: String,
+    state: tauri::State<'_, crate::state::SharedState>,
+) -> Result<(), AppError> {
     if confirmation != "format my data" {
         return Err(AppError::Validation(
             "Invalid confirmation string".into(),
         ));
     }
 
-    info!("Formatting all memory data via FLUSHDB");
-    let output = tokio::process::Command::new("docker")
-        .args(["exec", "agent-hub-redis", "redis-cli", "FLUSHDB"])
-        .output()
-        .await
-        .map_err(|e| AppError::ConnectionFailed(format!("Failed to flush Redis: {e}")))?;
+    let redis_config = {
+        let s = state.lock().unwrap();
+        s.redis_config.clone()
+    };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AppError::ConnectionFailed(format!(
-            "FLUSHDB failed: {stderr}"
-        )));
+    info!("Formatting all memory data via FLUSHDB");
+
+    if redis_config.source == crate::state::RedisSource::Local {
+        // Local: exec into the container
+        let output = tokio::process::Command::new("docker")
+            .args(["exec", "agent-hub-redis", "redis-cli", "FLUSHDB"])
+            .output()
+            .await
+            .map_err(|e| AppError::ConnectionFailed(format!("Failed to flush Redis: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::ConnectionFailed(format!(
+                "FLUSHDB failed: {stderr}"
+            )));
+        }
+    } else {
+        // Remote: use a disposable container to run redis-cli
+        let url = redis_config
+            .url
+            .as_deref()
+            .unwrap_or("redis://localhost:6379");
+        let output = tokio::process::Command::new("docker")
+            .args([
+                "run", "--rm",
+                "redis/redis-stack-server:latest",
+                "redis-cli", "-u", url, "FLUSHDB",
+            ])
+            .output()
+            .await
+            .map_err(|e| {
+                AppError::ConnectionFailed(format!("Failed to flush remote Redis: {e}"))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::ConnectionFailed(format!(
+                "FLUSHDB failed: {stderr}"
+            )));
+        }
     }
 
     // Restart API and MCP containers so they recreate their search indexes

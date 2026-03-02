@@ -10,6 +10,14 @@ export interface EmbeddingConfigStatus {
   config: EmbeddingConfig;
   hasOpenaiKey: boolean;
   pulledOllamaModels: string[];
+  redisConfig: RedisConfig;
+}
+
+export type RedisSource = 'local' | 'remote';
+
+export interface RedisConfig {
+  source: RedisSource;
+  url: string | null;
 }
 
 export interface EmbeddingModelInfo {

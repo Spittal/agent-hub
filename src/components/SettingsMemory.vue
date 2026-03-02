@@ -7,7 +7,7 @@ import { storeToRefs } from 'pinia';
 import { useServersStore } from '@/stores/servers';
 import { useSkillsStore } from '@/stores/skills';
 import type { MemoryStatus } from '@/types/memory';
-import type { EmbeddingConfigStatus, EmbeddingProvider, EmbeddingModelInfo } from '@/types/embedding';
+import type { EmbeddingConfigStatus, EmbeddingProvider, EmbeddingModelInfo, RedisSource } from '@/types/embedding';
 import { OLLAMA_MODELS, OPENAI_MODELS } from '@/types/embedding';
 import ToggleCard from './ToggleCard.vue';
 
@@ -34,6 +34,12 @@ const showApiKey = ref(false);
 const saving = ref(false);
 const saved = ref(false);
 const deletingModel = ref<string | null>(null);
+
+// Redis config
+const redisSource = ref<RedisSource>('local');
+const redisUrl = ref('');
+const redisSaving = ref(false);
+const redisSaved = ref(false);
 
 const canEnable = computed(() => {
   if (!status.value) return false;
@@ -74,6 +80,15 @@ const description = computed(() => {
     return 'Shared long-term memory across all connected AI tools. Uses OpenAI API for embeddings. Requires Docker (for Redis) and an API key.';
   }
   return 'Shared long-term memory across all connected AI tools. Uses local Ollama models for embeddings — no API keys needed. Requires Docker.';
+});
+
+const redisDirty = computed(() => {
+  if (!embeddingStatus.value) return false;
+  const saved = embeddingStatus.value.redisConfig;
+  return (
+    redisSource.value !== saved.source ||
+    (redisSource.value === 'remote' && redisUrl.value !== (saved.url ?? ''))
+  );
 });
 
 const memoryServer = computed(() =>
@@ -138,6 +153,11 @@ async function fetchEmbeddingConfig() {
       customName.value = cfg.model;
       customDims.value = cfg.dimensions;
     }
+
+    // Populate Redis config
+    const redis = embeddingStatus.value.redisConfig;
+    redisSource.value = redis.source;
+    redisUrl.value = redis.url ?? '';
   } catch {
     // Non-critical, defaults will be used
   }
@@ -255,6 +275,25 @@ async function deleteModel(m: string) {
   }
 }
 
+async function saveRedisConfig() {
+  redisSaving.value = true;
+  redisSaved.value = false;
+  try {
+    await invoke('save_redis_config_cmd', {
+      config: {
+        source: redisSource.value,
+        url: redisSource.value === 'remote' ? redisUrl.value : null,
+      },
+    });
+    redisSaved.value = true;
+    await fetchEmbeddingConfig();
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    redisSaving.value = false;
+  }
+}
+
 function isModelPulled(m: string): boolean {
   return embeddingStatus.value?.pulledOllamaModels.includes(m) ?? false;
 }
@@ -331,12 +370,16 @@ onUnmounted(() => {
             {{ progressText }}
           </div>
           <div class="space-y-1">
-            <div class="flex items-center gap-2 text-[11px]">
+            <div v-if="status.redisSource === 'local'" class="flex items-center gap-2 text-[11px]">
               <span
                 class="h-1.5 w-1.5 shrink-0 rounded-full"
                 :class="status.redisRunning ? 'bg-status-connected' : 'bg-status-error'"
               />
               <span class="text-text-secondary">Redis</span>
+            </div>
+            <div v-else class="flex items-center gap-2 text-[11px]">
+              <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-text-muted" />
+              <span class="text-text-secondary">Redis (remote)</span>
             </div>
             <div v-if="status.embeddingProvider === 'ollama'" class="flex items-center gap-2 text-[11px]">
               <span
@@ -377,6 +420,71 @@ onUnmounted(() => {
           >
             {{ retrying ? 'Retrying...' : 'Retry' }}
           </button>
+        </div>
+      </div>
+
+      <!-- Redis config panel -->
+      <div class="rounded border border-border bg-surface-1">
+        <div class="px-3 py-2.5">
+          <span class="text-xs font-medium text-text-secondary">Redis</span>
+        </div>
+
+        <!-- Source tabs -->
+        <div class="flex border-t border-border/50">
+          <button
+            class="flex-1 py-1.5 text-[11px] font-medium transition-colors"
+            :class="redisSource === 'local'
+              ? 'bg-surface-2 text-text-primary'
+              : 'text-text-muted hover:text-text-secondary'"
+            @click="redisSource = 'local'; redisSaved = false"
+          >
+            Local (Docker)
+          </button>
+          <button
+            class="flex-1 py-1.5 text-[11px] font-medium transition-colors border-l border-border/50"
+            :class="redisSource === 'remote'
+              ? 'bg-surface-2 text-text-primary'
+              : 'text-text-muted hover:text-text-secondary'"
+            @click="redisSource = 'remote'; redisSaved = false"
+          >
+            Remote
+          </button>
+        </div>
+
+        <div class="border-t border-border/50 px-3 py-2.5 space-y-2">
+          <!-- Remote URL input -->
+          <div v-if="redisSource === 'remote'" class="space-y-1.5">
+            <input
+              v-model="redisUrl"
+              type="text"
+              placeholder="redis://:password@host:port"
+              class="w-full rounded border border-border bg-surface-0 px-2 py-1.5 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+            />
+            <p class="text-[10px] text-text-muted">
+              redis://:password@host:port or rediss:// for TLS
+            </p>
+          </div>
+
+          <div v-else class="text-[11px] text-text-secondary">
+            Redis will run as a Docker container on this machine.
+          </div>
+
+          <!-- Source change warning when memory is enabled -->
+          <div v-if="status?.enabled && redisDirty" class="rounded bg-status-connecting/10 px-2.5 py-2 text-[11px] text-status-connecting">
+            Disable Memory before switching Redis source.
+          </div>
+
+          <!-- Save button -->
+          <div class="flex items-center gap-2 pt-1">
+            <button
+              class="rounded bg-accent px-3 py-1 text-[11px] font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+              :disabled="!redisDirty || redisSaving"
+              @click="saveRedisConfig"
+            >
+              {{ redisSaving ? 'Saving...' : 'Save' }}
+            </button>
+            <span v-if="redisSaved && !redisDirty" class="text-[10px] text-status-connected">&#10003; Saved</span>
+          </div>
         </div>
       </div>
 
