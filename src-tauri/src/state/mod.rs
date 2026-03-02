@@ -31,6 +31,8 @@ pub struct AppState {
     pub enabled_integrations: Vec<String>,
     pub embedding_config: EmbeddingConfig,
     pub redis_config: RedisConfig,
+    /// PID of an active Redis tunnel process (e.g. gcloud SSH tunnel).
+    pub tunnel_pid: Option<u32>,
     /// Logs emitted before the frontend event listener is ready.
     pub log_buffer: Vec<BufferedLog>,
     /// When true, integrations get a single discovery endpoint instead of per-server entries.
@@ -53,6 +55,7 @@ impl AppState {
             enabled_integrations: Vec::new(),
             embedding_config: EmbeddingConfig::default(),
             redis_config: RedisConfig::default(),
+            tunnel_pid: None,
             log_buffer: Vec::new(),
             tool_discovery_enabled: false,
             installed_skills: Vec::new(),

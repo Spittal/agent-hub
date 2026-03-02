@@ -30,6 +30,10 @@ impl Default for EmbeddingConfig {
 pub struct RedisConfig {
     pub source: RedisSource,
     pub url: Option<String>,
+    /// Shell command to run before connecting (e.g. gcloud SSH tunnel). Only used when source == Remote.
+    pub tunnel_command: Option<String>,
+    /// Local port the tunnel binds to. Defaults to 6379 if not set.
+    pub tunnel_local_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -44,6 +48,8 @@ impl Default for RedisConfig {
         Self {
             source: RedisSource::Local,
             url: None,
+            tunnel_command: None,
+            tunnel_local_port: None,
         }
     }
 }

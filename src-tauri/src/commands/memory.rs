@@ -1050,6 +1050,55 @@ async fn restart_container(name: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Spawn a tunnel command (e.g. `gcloud compute ssh ... -N -L 6379:host:6379`).
+/// Returns the child PID. The command is run via `sh -c` so pipes and env vars work.
+async fn spawn_tunnel(command: &str) -> Result<u32, AppError> {
+    let child = tokio::process::Command::new("sh")
+        .args(["-c", command])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| AppError::ConnectionFailed(format!("Failed to spawn tunnel: {e}")))?;
+
+    let pid = child.id().ok_or_else(|| {
+        AppError::ConnectionFailed("Tunnel process exited immediately".into())
+    })?;
+
+    // Detach — we track by PID, don't hold the Child handle
+    // (dropping Child doesn't kill the process on Unix)
+    std::mem::forget(child);
+
+    info!("Tunnel spawned with PID {pid}");
+    Ok(pid)
+}
+
+/// Wait for a TCP port to accept connections, with timeout.
+async fn wait_for_port(port: u16, timeout_secs: u64) -> Result<(), AppError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let addr = format!("127.0.0.1:{port}");
+
+    while std::time::Instant::now() < deadline {
+        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+            info!("Port {port} is accepting connections");
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    Err(AppError::ConnectionFailed(format!(
+        "Tunnel port {port} not ready after {timeout_secs}s — is the command correct?"
+    )))
+}
+
+/// Kill a tunnel process by PID (best-effort). Public for app exit cleanup.
+pub fn kill_tunnel_process(pid: u32) {
+    info!("Killing tunnel process PID {pid}");
+    let _ = std::process::Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .output();
+}
+
 #[tauri::command]
 pub async fn restart_memory(
     app: AppHandle,
