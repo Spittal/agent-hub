@@ -50,6 +50,7 @@ pub fn run() {
             let enabled_integrations = persistence::load_enabled_integrations(app.handle());
             let stats = persistence::load_stats(app.handle());
             let embedding_config = persistence::load_embedding_config(app.handle());
+            let redis_config = persistence::load_redis_config(app.handle());
             let oauth_entries = persistence::load_oauth_store(app.handle());
             info!(
                 "Loaded {} servers, {} enabled integrations, {} server stats, {} OAuth entries from persistent store",
@@ -73,6 +74,7 @@ pub fn run() {
             app_state.servers = servers;
             app_state.enabled_integrations = enabled_integrations;
             app_state.embedding_config = embedding_config;
+            app_state.redis_config = redis_config;
             app_state.tool_discovery_enabled = tool_discovery_enabled;
             app_state.installed_skills = installed_skills;
             app_state.enabled_skill_integrations = enabled_skill_integrations;
@@ -146,6 +148,7 @@ pub fn run() {
             commands::memory::restart_memory,
             commands::memory::get_embedding_config,
             commands::memory::save_embedding_config_cmd,
+            commands::memory::save_redis_config_cmd,
             commands::memory::delete_ollama_model,
             commands::stats::get_server_stats,
             commands::stats::reset_server_stats,

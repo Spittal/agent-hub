@@ -6,7 +6,7 @@ use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 use tracing::{error, info};
 
-use crate::state::{EmbeddingConfig, InstalledSkill, OAuthState, ServerConfig};
+use crate::state::{EmbeddingConfig, InstalledSkill, OAuthState, RedisConfig, ServerConfig};
 use crate::stats::ServerStats;
 
 const STORE_FILE: &str = "config.json";
@@ -15,6 +15,7 @@ const INTEGRATIONS_KEY: &str = "enabled_integrations";
 const STATS_KEY: &str = "stats";
 const EMBEDDING_CONFIG_KEY: &str = "embedding_config";
 const OPENAI_API_KEY_KEY: &str = "openai_api_key";
+const REDIS_CONFIG_KEY: &str = "redis_config";
 const OAUTH_STORE_KEY: &str = "oauth_store";
 const TOOL_DISCOVERY_KEY: &str = "tool_discovery_enabled";
 const INSTALLED_SKILLS_KEY: &str = "installed_skills";
@@ -115,6 +116,14 @@ pub fn load_openai_api_key(app: &AppHandle) -> Option<String> {
 
 pub fn save_openai_api_key(app: &AppHandle, key: &str) {
     store_set(app, OPENAI_API_KEY_KEY, &key.to_string());
+}
+
+pub fn load_redis_config(app: &AppHandle) -> RedisConfig {
+    store_get(app, REDIS_CONFIG_KEY).unwrap_or_default()
+}
+
+pub fn save_redis_config(app: &AppHandle, config: &RedisConfig) {
+    store_set(app, REDIS_CONFIG_KEY, config);
 }
 
 pub fn load_oauth_store(app: &AppHandle) -> HashMap<String, OAuthState> {

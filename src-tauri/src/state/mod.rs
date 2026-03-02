@@ -30,6 +30,7 @@ pub struct AppState {
     /// IDs of AI tool integrations that Agent Hub is configured to manage.
     pub enabled_integrations: Vec<String>,
     pub embedding_config: EmbeddingConfig,
+    pub redis_config: RedisConfig,
     /// Logs emitted before the frontend event listener is ready.
     pub log_buffer: Vec<BufferedLog>,
     /// When true, integrations get a single discovery endpoint instead of per-server entries.
@@ -51,6 +52,7 @@ impl AppState {
             connections: HashMap::new(),
             enabled_integrations: Vec::new(),
             embedding_config: EmbeddingConfig::default(),
+            redis_config: RedisConfig::default(),
             log_buffer: Vec::new(),
             tool_discovery_enabled: false,
             installed_skills: Vec::new(),

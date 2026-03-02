@@ -24,3 +24,26 @@ impl Default for EmbeddingConfig {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RedisConfig {
+    pub source: RedisSource,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum RedisSource {
+    Local,
+    Remote,
+}
+
+impl Default for RedisConfig {
+    fn default() -> Self {
+        Self {
+            source: RedisSource::Local,
+            url: None,
+        }
+    }
+}

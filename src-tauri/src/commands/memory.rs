@@ -9,11 +9,12 @@ use crate::error::AppError;
 use crate::mcp::client::SharedConnections;
 use crate::mcp::proxy::ProxyState;
 use crate::persistence::{
-    load_openai_api_key, save_embedding_config, save_openai_api_key, save_servers,
+    load_openai_api_key, save_embedding_config, save_openai_api_key, save_redis_config,
+    save_servers,
 };
 use crate::state::{
-    ConnectionState, EmbeddingConfig, EmbeddingProvider, McpTool, ServerConfig, ServerStatus,
-    ServerTransport, SharedState,
+    ConnectionState, EmbeddingConfig, EmbeddingProvider, McpTool, RedisConfig, RedisSource,
+    ServerConfig, ServerStatus, ServerTransport, SharedState,
 };
 
 const NETWORK: &str = "agent-hub-net";
@@ -710,6 +711,52 @@ pub async fn save_embedding_config_cmd(
     info!(
         "Saved embedding config: provider={:?}, model={}, dimensions={}",
         input.config.provider, input.config.model, input.config.dimensions
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn save_redis_config_cmd(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    config: RedisConfig,
+) -> Result<(), AppError> {
+    // Validate URL when source is Remote
+    if config.source == RedisSource::Remote {
+        let url = config.url.as_deref().unwrap_or("");
+        if url.is_empty() {
+            return Err(AppError::Validation(
+                "Redis URL is required for remote source".into(),
+            ));
+        }
+        if !url.starts_with("redis://") && !url.starts_with("rediss://") {
+            return Err(AppError::Validation(
+                "Redis URL must start with redis:// or rediss://".into(),
+            ));
+        }
+    }
+
+    // Block source change while memory is enabled
+    {
+        let s = state.lock().unwrap();
+        if find_memory_server(&s.servers).is_some() && s.redis_config.source != config.source {
+            return Err(AppError::Validation(
+                "Disable Memory before switching Redis source".into(),
+            ));
+        }
+    }
+
+    // Save to state + persistence
+    {
+        let mut s = state.lock().unwrap();
+        s.redis_config = config.clone();
+    }
+    save_redis_config(&app, &config);
+
+    info!(
+        "Saved Redis config: source={:?}, url={:?}",
+        config.source,
+        config.url.as_deref().map(|_| "***")
     );
     Ok(())
 }
