@@ -31,6 +31,7 @@ pub struct MemoryStatus {
     pub server_status: Option<String>,
     pub docker_available: bool,
     pub redis_running: bool,
+    pub redis_source: String,
     pub api_running: bool,
     pub mcp_running: bool,
     pub ollama_running: bool,
@@ -591,55 +592,7 @@ fn find_memory_server(servers: &[ServerConfig]) -> Option<&ServerConfig> {
 
 #[tauri::command]
 pub async fn get_memory_status(state: State<'_, SharedState>) -> Result<MemoryStatus, AppError> {
-    let (enabled, server_status, embedding_config) = {
-        let s = state.lock().unwrap();
-        let config = s.embedding_config.clone();
-        match find_memory_server(&s.servers) {
-            Some(server) => (
-                true,
-                server
-                    .status
-                    .as_ref()
-                    .map(|st| format!("{st:?}").to_lowercase()),
-                config,
-            ),
-            None => (false, None, config),
-        }
-    };
-
-    let docker_available = is_command_available("docker").await;
-
-    let (redis_running, api_running, mcp_running, ollama_running) = if docker_available {
-        let redis = is_container_running(REDIS_CONTAINER).await;
-        let api = is_container_running(API_CONTAINER).await;
-        let mcp = is_container_running(MCP_CONTAINER).await;
-        let ollama = if embedding_config.provider == EmbeddingProvider::Ollama {
-            is_container_running(OLLAMA_CONTAINER).await
-        } else {
-            false
-        };
-        (redis, api, mcp, ollama)
-    } else {
-        (false, false, false, false)
-    };
-
-    let provider_str = match embedding_config.provider {
-        EmbeddingProvider::Ollama => "ollama",
-        EmbeddingProvider::Openai => "openai",
-    };
-
-    Ok(MemoryStatus {
-        enabled,
-        server_status,
-        docker_available,
-        redis_running,
-        api_running,
-        mcp_running,
-        ollama_running,
-        embedding_provider: provider_str.into(),
-        embedding_model: embedding_config.model,
-        error: None,
-    })
+    get_memory_status_inner(&state).await
 }
 
 #[tauri::command]
@@ -772,19 +725,36 @@ pub async fn enable_memory(
         return Err(AppError::DependencyNotFound("docker".into()));
     }
 
-    let embedding_config = {
+    let (embedding_config, redis_config) = {
         let s = state.lock().unwrap();
         if find_memory_server(&s.servers).is_some() {
             return Err(AppError::Validation("Memory is already enabled".into()));
         }
-        s.embedding_config.clone()
+        (s.embedding_config.clone(), s.redis_config.clone())
     };
 
+    // Validate remote URL if needed
+    if redis_config.source == RedisSource::Remote {
+        let url = redis_config.url.as_deref().unwrap_or("");
+        if url.is_empty() || (!url.starts_with("redis://") && !url.starts_with("rediss://")) {
+            return Err(AppError::Validation(
+                "Configure a valid Redis URL before enabling Memory".into(),
+            ));
+        }
+    }
+
+    let has_local_redis = redis_config.source == RedisSource::Local;
+
     // Determine total container count for progress reporting
-    let total_containers = if embedding_config.provider == EmbeddingProvider::Ollama {
-        4 // Redis, Ollama, API, MCP
-    } else {
-        3 // Redis, API, MCP
+    let total_containers = {
+        let mut count = 2; // API + MCP always
+        if has_local_redis {
+            count += 1;
+        }
+        if embedding_config.provider == EmbeddingProvider::Ollama {
+            count += 1;
+        }
+        count
     };
     let mut step: usize = 0;
 
@@ -792,39 +762,43 @@ pub async fn enable_memory(
     emit_progress(&app, "Creating Docker network...");
     ensure_network().await?;
 
-    // Migrate existing Redis container to use a named volume (no-op if already done)
-    migrate_redis_volume(&app).await?;
+    if has_local_redis {
+        // Migrate existing Redis container to use a named volume (no-op if already done)
+        migrate_redis_volume(&app).await?;
 
-    // Start Redis container with persistent volume
-    step += 1;
-    emit_step(&app, "Starting Redis...", step, total_containers);
-    ensure_container(
-        &app,
-        REDIS_CONTAINER,
-        &docker_run(&[
-            "run",
-            "-d",
-            "--name",
+        // Start Redis container with persistent volume
+        step += 1;
+        emit_step(&app, "Starting Redis...", step, total_containers);
+        ensure_container(
+            &app,
             REDIS_CONTAINER,
-            "--network",
-            NETWORK,
-            "-p",
-            "6379:6379",
-            "-e",
-            "REDIS_ARGS=--appendonly yes",
-            "-v",
-            &format!("{REDIS_VOLUME}:/data"),
-            "redis/redis-stack-server:latest",
-        ]),
-    )
-    .await?;
+            &docker_run(&[
+                "run",
+                "-d",
+                "--name",
+                REDIS_CONTAINER,
+                "--network",
+                NETWORK,
+                "-p",
+                "6379:6379",
+                "-e",
+                "REDIS_ARGS=--appendonly yes",
+                "-v",
+                &format!("{REDIS_VOLUME}:/data"),
+                "redis/redis-stack-server:latest",
+            ]),
+        )
+        .await?;
+    }
 
     // Build env vars — aligned with agent-memory-server docker-compose
     let mut env = std::collections::HashMap::new();
-    env.insert(
-        "REDIS_URL".into(),
-        format!("redis://{REDIS_CONTAINER}:6379"),
-    );
+    let redis_url = if has_local_redis {
+        format!("redis://{REDIS_CONTAINER}:6379")
+    } else {
+        redis_config.url.clone().expect("validated above")
+    };
+    env.insert("REDIS_URL".into(), redis_url);
     env.insert("LONG_TERM_MEMORY".into(), "True".into());
     env.insert("ENABLE_TOPIC_EXTRACTION".into(), "True".into());
     env.insert("ENABLE_NER".into(), "True".into());
@@ -986,11 +960,15 @@ pub async fn disable_memory(
     state: State<'_, SharedState>,
     connections: State<'_, SharedConnections>,
 ) -> Result<(), AppError> {
-    let (provider, server_id) = {
+    let (provider, server_id, redis_source) = {
         let s = state.lock().unwrap();
         let server = find_memory_server(&s.servers)
             .ok_or_else(|| AppError::Validation("Memory is not enabled".into()))?;
-        (s.embedding_config.provider.clone(), server.id.clone())
+        (
+            s.embedding_config.provider.clone(),
+            server.id.clone(),
+            s.redis_config.source.clone(),
+        )
     };
 
     // Disconnect if connected
@@ -1029,7 +1007,9 @@ pub async fn disable_memory(
 
     stop_container(MCP_CONTAINER).await;
     stop_container(API_CONTAINER).await;
-    stop_container(REDIS_CONTAINER).await;
+    if redis_source == RedisSource::Local {
+        stop_container(REDIS_CONTAINER).await;
+    }
 
     if provider == EmbeddingProvider::Ollama {
         stop_container(OLLAMA_CONTAINER).await;
@@ -1074,11 +1054,15 @@ pub async fn restart_memory(
     state: State<'_, SharedState>,
     connections: State<'_, SharedConnections>,
 ) -> Result<MemoryStatus, AppError> {
-    let (server_id, provider) = {
+    let (server_id, provider, redis_source) = {
         let s = state.lock().unwrap();
         let server = find_memory_server(&s.servers)
             .ok_or_else(|| AppError::Validation("Memory is not enabled".into()))?;
-        (server.id.clone(), s.embedding_config.provider.clone())
+        (
+            server.id.clone(),
+            s.embedding_config.provider.clone(),
+            s.redis_config.source.clone(),
+        )
     };
 
     // Disconnect if connected
@@ -1105,7 +1089,9 @@ pub async fn restart_memory(
     emit_progress(&app, "Restarting memory containers...");
     info!("Restarting memory containers");
 
-    restart_container(REDIS_CONTAINER).await?;
+    if redis_source == RedisSource::Local {
+        restart_container(REDIS_CONTAINER).await?;
+    }
     if provider == EmbeddingProvider::Ollama {
         restart_container(OLLAMA_CONTAINER).await?;
     }
@@ -1221,9 +1207,10 @@ pub async fn restart_memory(
 /// Inner helper for get_memory_status that takes a SharedState reference
 /// instead of a Tauri State wrapper.
 async fn get_memory_status_inner(state: &SharedState) -> Result<MemoryStatus, AppError> {
-    let (enabled, server_status, embedding_config) = {
+    let (enabled, server_status, embedding_config, redis_config) = {
         let s = state.lock().unwrap();
         let config = s.embedding_config.clone();
+        let redis = s.redis_config.clone();
         match find_memory_server(&s.servers) {
             Some(server) => (
                 true,
@@ -1232,15 +1219,20 @@ async fn get_memory_status_inner(state: &SharedState) -> Result<MemoryStatus, Ap
                     .as_ref()
                     .map(|st| format!("{st:?}").to_lowercase()),
                 config,
+                redis,
             ),
-            None => (false, None, config),
+            None => (false, None, config, redis),
         }
     };
 
     let docker_available = is_command_available("docker").await;
 
     let (redis_running, api_running, mcp_running, ollama_running) = if docker_available {
-        let redis = is_container_running(REDIS_CONTAINER).await;
+        let redis = if redis_config.source == RedisSource::Local {
+            is_container_running(REDIS_CONTAINER).await
+        } else {
+            false
+        };
         let api = is_container_running(API_CONTAINER).await;
         let mcp = is_container_running(MCP_CONTAINER).await;
         let ollama = if embedding_config.provider == EmbeddingProvider::Ollama {
@@ -1258,11 +1250,17 @@ async fn get_memory_status_inner(state: &SharedState) -> Result<MemoryStatus, Ap
         EmbeddingProvider::Openai => "openai",
     };
 
+    let redis_source = match redis_config.source {
+        RedisSource::Local => "local",
+        RedisSource::Remote => "remote",
+    };
+
     Ok(MemoryStatus {
         enabled,
         server_status,
         docker_available,
         redis_running,
+        redis_source: redis_source.into(),
         api_running,
         mcp_running,
         ollama_running,
