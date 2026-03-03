@@ -52,6 +52,22 @@ Discover and manage Claude CLI plugins from a GUI. See what each plugin includes
 
 Per-server tool usage stats: total calls, error rates, average latency. Per-tool breakdowns. Recent call history showing which AI tool made each call. Real-time log streaming from connected servers.
 
+## Installation
+
+Download the latest `.dmg` from [Releases](https://github.com/anthropics/agent-hub/releases), mount it, and drag **Agent Hub** to `/Applications`.
+
+### macOS "app is damaged" warning
+
+The app is not currently code-signed or notarized, so macOS Gatekeeper will block it with an "app is damaged" error. To fix this, run:
+
+```bash
+xattr -cr "/Applications/Agent Hub.app"
+```
+
+This strips the quarantine attribute that macOS adds to files downloaded from the internet. The app will open normally after that.
+
+We plan to fix this properly by signing and notarizing the build with an Apple Developer ID certificate, so the DMG will just work without any workaround. Tracked in [#TODO].
+
 ## Development
 
 ```bash
