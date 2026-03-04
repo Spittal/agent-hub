@@ -4,15 +4,18 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import ServerList from './components/ServerList.vue';
 import SkillList from './components/SkillList.vue';
 import PluginList from './components/PluginList.vue';
+import ProfileStatusBar from './components/ProfileStatusBar.vue';
 import { useServersStore } from '@/stores/servers';
 import { useSkillsStore } from '@/stores/skills';
 import { usePluginsStore } from '@/stores/plugins';
+import { useProfilesStore } from '@/stores/profiles';
 import { useEvents } from '@/composables/useEvents';
 import { useServerLogs } from '@/composables/useServerLogs';
 
 const serversStore = useServersStore();
 const skillsStore = useSkillsStore();
 const pluginsStore = usePluginsStore();
+const profilesStore = useProfilesStore();
 
 useEvents();
 useServerLogs();
@@ -22,15 +25,16 @@ const skillsCollapsed = ref(false);
 const pluginsCollapsed = ref(false);
 const memoryCollapsed = ref(false);
 
-const isMemoryEnabled = computed(() =>
-  serversStore.servers.some(s => s.managedBy === 'memory')
-);
+const isMemoryEnabled = computed(() => {
+  return serversStore.servers.some(s => s.managedBy === 'memory');
+});
 
 onMounted(async () => {
   await serversStore.loadServers();
   serversStore.autoConnectServers();
   skillsStore.loadInstalled();
   pluginsStore.loadInstalled();
+  profilesStore.loadProfiles();
   // Set app icon at runtime (works during tauri dev)
   fetch('/app-icon.png')
     .then((r) => r.arrayBuffer())
@@ -47,7 +51,6 @@ onMounted(async () => {
     <div class="flex min-h-0 flex-1">
       <!-- Sidebar -->
       <aside class="flex w-60 flex-col border-r border-border bg-surface-1">
-
         <div class="min-h-0 flex-1 overflow-y-auto">
           <!-- SERVERS section -->
           <div class="flex items-center justify-between border-b border-border px-3 py-2">
@@ -154,6 +157,7 @@ onMounted(async () => {
 
         <!-- Bottom nav links -->
         <div class="shrink-0 border-t border-border">
+          <ProfileStatusBar />
           <router-link
             to="/status"
             class="flex items-center gap-2 px-3 py-2 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"

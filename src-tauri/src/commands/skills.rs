@@ -437,6 +437,20 @@ pub async fn uninstall_skill(
         let skill = s.installed_skills.remove(idx);
         let integrations = s.enabled_skill_integrations.clone();
         persistence::save_installed_skills(&app, &s.installed_skills);
+
+        // Cascade: remove this skill from all profiles
+        let mut profiles_changed = false;
+        for profile in &mut s.profiles {
+            let before = profile.skill_ids.len();
+            profile.skill_ids.retain(|sid| sid != &id);
+            if profile.skill_ids.len() != before {
+                profiles_changed = true;
+            }
+        }
+        if profiles_changed {
+            persistence::save_profiles(&app, &s.profiles);
+        }
+
         (skill.skill_id, integrations)
     };
 

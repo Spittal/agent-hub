@@ -64,10 +64,12 @@ pub fn run() {
             let installed_skills = persistence::load_installed_skills(app.handle());
             let enabled_skill_integrations =
                 persistence::load_enabled_skill_integrations(app.handle());
+            let profiles = persistence::load_profiles(app.handle());
             info!(
-                "Loaded {} installed skills, {} skill integrations",
+                "Loaded {} installed skills, {} skill integrations, {} profiles",
                 installed_skills.len(),
                 enabled_skill_integrations.len(),
+                profiles.len(),
             );
 
             let mut app_state = AppState::new();
@@ -78,6 +80,19 @@ pub fn run() {
             app_state.tool_discovery_enabled = tool_discovery_enabled;
             app_state.installed_skills = installed_skills;
             app_state.enabled_skill_integrations = enabled_skill_integrations;
+            app_state.profiles = profiles;
+
+            // --- One-time migrations ---
+            // Remove stale active_profile_id key (manual switching was removed)
+            persistence::store_delete(app.handle(), "active_profile_id");
+            // Clean legacy .claude/settings.json proxy entries from all profile directories
+            for profile in &app_state.profiles {
+                for dir in &profile.directory_paths {
+                    let legacy_path = std::path::PathBuf::from(dir).join(".claude/settings.json");
+                    commands::integrations::clean_legacy_claude_settings(&legacy_path);
+                }
+            }
+
             let app_state = Mutex::new(app_state);
 
             // Reconcile managed skills for features enabled before managed skills existed
@@ -173,6 +188,16 @@ pub fn run() {
             commands::plugins::toggle_plugin,
             commands::plugins::list_installed_plugins,
             commands::plugins::update_marketplace,
+            commands::profiles::list_profiles,
+            commands::profiles::create_profile,
+            commands::profiles::update_profile,
+            commands::profiles::delete_profile,
+            commands::profiles::add_directory_to_profile,
+            commands::profiles::remove_directory_from_profile,
+            commands::profiles::export_profile,
+            commands::profiles::export_profile_to_file,
+            commands::profiles::import_profile,
+            commands::profiles::import_profile_from_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

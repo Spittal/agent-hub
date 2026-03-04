@@ -44,6 +44,19 @@ fn build_tray_menu(
     let state = app.state::<SharedState>();
     let s = state.lock().unwrap();
 
+    // Profile indicator
+    let profile_count = s.profiles.len();
+    let profile_label = if profile_count == 0 {
+        "No profiles".to_string()
+    } else {
+        format!("{} profile{}", profile_count, if profile_count == 1 { "" } else { "s" })
+    };
+    let profile_item = MenuItemBuilder::new(profile_label)
+        .id("profile")
+        .enabled(false)
+        .build(app)?;
+    builder = builder.item(&profile_item).separator();
+
     if s.servers.is_empty() {
         let item = MenuItemBuilder::new("No servers configured")
             .id("no-servers")

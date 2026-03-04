@@ -3,13 +3,13 @@ import { usePluginsStore } from '@/stores/plugins';
 import { storeToRefs } from 'pinia';
 
 const store = usePluginsStore();
-const { installedPlugins } = storeToRefs(store);
+const { visiblePlugins } = storeToRefs(store);
 </script>
 
 <template>
   <div>
     <router-link
-      v-for="plugin in installedPlugins"
+      v-for="plugin in visiblePlugins"
       :key="plugin.id"
       :to="'/plugins/' + plugin.id"
       class="flex items-center gap-2 border-b border-border/50 px-3 py-2 transition-colors hover:bg-surface-2"
@@ -22,7 +22,7 @@ const { installedPlugins } = storeToRefs(store);
       <span class="truncate text-xs" :class="plugin.enabled ? '' : 'text-text-muted'">{{ plugin.name }}</span>
     </router-link>
     <div
-      v-if="installedPlugins.length === 0"
+      v-if="visiblePlugins.length === 0"
       class="px-3 py-6 text-center text-xs text-text-muted"
     >
       No plugins installed

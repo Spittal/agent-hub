@@ -1,6 +1,7 @@
 mod embedding;
 mod oauth;
 pub mod plugin;
+pub mod profile;
 mod providers;
 pub mod registry;
 pub mod skill;
@@ -9,6 +10,7 @@ mod server;
 
 pub use embedding::*;
 pub use oauth::*;
+pub use profile::*;
 pub use server::*;
 pub use skill::InstalledSkill;
 
@@ -41,6 +43,8 @@ pub struct AppState {
     pub installed_skills: Vec<InstalledSkill>,
     /// IDs of AI tools that should receive SKILL.md files (separate from MCP integrations).
     pub enabled_skill_integrations: Vec<String>,
+    /// Named profiles that filter which items appear in AI tool configs.
+    pub profiles: Vec<Profile>,
 }
 
 pub struct ConnectionState {
@@ -60,6 +64,7 @@ impl AppState {
             tool_discovery_enabled: false,
             installed_skills: Vec::new(),
             enabled_skill_integrations: Vec::new(),
+            profiles: Vec::new(),
         }
     }
 }
