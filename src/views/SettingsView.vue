@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
+import SettingsProfiles from '@/components/SettingsProfiles.vue';
 import SettingsIntegrations from '@/components/SettingsIntegrations.vue';
 import SettingsSkills from '@/components/SettingsSkills.vue';
 import SettingsDiscovery from '@/components/SettingsDiscovery.vue';
 import SettingsMemory from '@/components/SettingsMemory.vue';
 import SettingsProxy from '@/components/SettingsProxy.vue';
 
-type Section = 'integrations' | 'skills' | 'discovery' | 'memory' | 'proxy';
+type Section = 'profiles' | 'integrations' | 'skills' | 'discovery' | 'memory' | 'proxy';
 
 const sections: { id: Section; label: string }[] = [
+  { id: 'profiles', label: 'Profiles' },
   { id: 'integrations', label: 'MCP Configs' },
   { id: 'skills', label: 'Skills' },
   { id: 'discovery', label: 'Discovery' },
@@ -22,7 +24,7 @@ const route = useRoute();
 
 function tabFromQuery(): Section {
   const tab = route.query.tab as string | undefined;
-  return tab && validIds.has(tab) ? (tab as Section) : 'integrations';
+  return tab && validIds.has(tab) ? (tab as Section) : 'profiles';
 }
 
 const active = ref<Section>(tabFromQuery());
@@ -55,6 +57,7 @@ watch(() => route.query.tab, () => {
 
       <!-- Content -->
       <div class="flex-1 overflow-y-auto p-5">
+        <SettingsProfiles v-if="active === 'profiles'" :key="String(route.query.profile ?? '')" />
         <SettingsIntegrations v-if="active === 'integrations'" />
         <SettingsSkills v-if="active === 'skills'" />
         <SettingsDiscovery v-if="active === 'discovery'" />

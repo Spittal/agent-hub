@@ -86,25 +86,39 @@ pub async fn remove_server(
     id: String,
 ) -> Result<(), AppError> {
     {
-        let mut state = state.lock().unwrap();
-        let is_managed = state
+        let mut s = state.lock().unwrap();
+        let is_managed = s
             .servers
             .iter()
-            .find(|s| s.id == id)
-            .and_then(|s| s.managed)
+            .find(|srv| srv.id == id)
+            .and_then(|srv| srv.managed)
             .unwrap_or(false);
         if is_managed {
             return Err(AppError::Validation(
                 "Cannot delete a managed server".into(),
             ));
         }
-        let len_before = state.servers.len();
-        state.servers.retain(|s| s.id != id);
-        if state.servers.len() == len_before {
+        let len_before = s.servers.len();
+        s.servers.retain(|srv| srv.id != id);
+        if s.servers.len() == len_before {
             return Err(AppError::ServerNotFound(id));
         }
-        state.connections.remove(&id);
-        save_servers(&app, &state.servers);
+        s.connections.remove(&id);
+
+        // Cascade: remove this server from all profiles
+        let mut profiles_changed = false;
+        for profile in &mut s.profiles {
+            let before = profile.server_ids.len();
+            profile.server_ids.retain(|sid| sid != &id);
+            if profile.server_ids.len() != before {
+                profiles_changed = true;
+            }
+        }
+
+        save_servers(&app, &s.servers);
+        if profiles_changed {
+            crate::persistence::save_profiles(&app, &s.profiles);
+        }
     }
     crate::tray::rebuild_tray_menu(&app);
     Ok(())

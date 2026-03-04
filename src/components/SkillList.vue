@@ -4,7 +4,7 @@ import { useSkillsStore } from '@/stores/skills';
 import { storeToRefs } from 'pinia';
 
 const store = useSkillsStore();
-const { installedSkills } = storeToRefs(store);
+const { visibleSkills } = storeToRefs(store);
 
 function managedByRoute(managedBy: string): RouteLocationRaw {
   return { path: '/settings', query: { tab: managedBy } };
@@ -14,7 +14,7 @@ function managedByRoute(managedBy: string): RouteLocationRaw {
 <template>
   <div>
     <router-link
-      v-for="skill in installedSkills"
+      v-for="skill in visibleSkills"
       :key="skill.id"
       :to="'/skills/' + skill.id"
       class="flex items-center gap-2 border-b border-border/50 px-3 py-2 transition-colors hover:bg-surface-2"
@@ -42,7 +42,7 @@ function managedByRoute(managedBy: string): RouteLocationRaw {
     </router-link>
 
     <div
-      v-if="installedSkills.length === 0"
+      v-if="visibleSkills.length === 0"
       class="px-3 py-6 text-center text-xs text-text-muted"
     >
       No skills found

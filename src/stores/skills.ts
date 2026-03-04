@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type {
   InstalledSkill,
@@ -13,6 +13,9 @@ export const useSkillsStore = defineStore('skills', () => {
   // --- Installed skills ---
   const installedSkills = ref<InstalledSkill[]>([]);
   const skillContent = ref<SkillContentResponse | null>(null);
+
+  /** Skills visible in the sidebar. */
+  const visibleSkills = computed(() => installedSkills.value);
 
   async function loadInstalled() {
     try {
@@ -103,6 +106,7 @@ export const useSkillsStore = defineStore('skills', () => {
   return {
     // Installed
     installedSkills,
+    visibleSkills,
     skillContent,
     loadInstalled,
     fetchSkillContent,

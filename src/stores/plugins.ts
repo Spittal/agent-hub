@@ -1,11 +1,14 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { PluginInfo } from '@/types/plugin';
 
 export const usePluginsStore = defineStore('plugins', () => {
   // --- Installed plugins ---
   const installedPlugins = ref<PluginInfo[]>([]);
+
+  /** Plugins visible in the sidebar. */
+  const visiblePlugins = computed(() => installedPlugins.value);
 
   async function loadInstalled() {
     try {
@@ -91,6 +94,7 @@ export const usePluginsStore = defineStore('plugins', () => {
   return {
     // Installed
     installedPlugins,
+    visiblePlugins,
     loadInstalled,
     installPlugin,
     uninstallPlugin,
