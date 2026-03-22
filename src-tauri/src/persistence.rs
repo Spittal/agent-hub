@@ -6,7 +6,7 @@ use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 use tracing::{error, info};
 
-use crate::state::{EmbeddingConfig, InstalledSkill, OAuthState, RedisConfig, ServerConfig};
+use crate::state::{EmbeddingConfig, InstalledSkill, OAuthState, Profile, RedisConfig, ServerConfig};
 use crate::stats::ServerStats;
 
 const STORE_FILE: &str = "config.json";
@@ -20,6 +20,8 @@ const OAUTH_STORE_KEY: &str = "oauth_store";
 const TOOL_DISCOVERY_KEY: &str = "tool_discovery_enabled";
 const INSTALLED_SKILLS_KEY: &str = "installed_skills";
 const ENABLED_SKILL_INTEGRATIONS_KEY: &str = "enabled_skill_integrations";
+const PROFILES_KEY: &str = "profiles";
+
 
 // --- Generic helpers ---
 
@@ -40,6 +42,19 @@ fn store_set<T: Serialize>(app: &AppHandle, key: &str, value: &T) {
     store.set(key, serde_json::to_value(value).unwrap_or_default());
     if let Err(e) = store.save() {
         error!("Failed to persist {key}: {e}");
+    }
+}
+
+/// Remove a key from the store (best-effort).
+pub fn store_delete(app: &AppHandle, key: &str) {
+    let store = match app.store(STORE_FILE) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if store.get(key).is_some() {
+        store.delete(key);
+        let _ = store.save();
+        info!("Removed stale key '{key}' from store");
     }
 }
 
@@ -191,3 +206,12 @@ pub fn load_enabled_skill_integrations(app: &AppHandle) -> Vec<String> {
 pub fn save_enabled_skill_integrations(app: &AppHandle, ids: &[String]) {
     store_set(app, ENABLED_SKILL_INTEGRATIONS_KEY, &ids);
 }
+
+pub fn load_profiles(app: &AppHandle) -> Vec<Profile> {
+    store_get(app, PROFILES_KEY).unwrap_or_default()
+}
+
+pub fn save_profiles(app: &AppHandle, profiles: &[Profile]) {
+    store_set(app, PROFILES_KEY, &profiles);
+}
+

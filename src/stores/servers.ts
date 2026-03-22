@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { ServerConfig, ServerConfigInput } from '@/types/server';
 import type { OAuthStatus } from '@/types/oauth';
@@ -8,6 +8,9 @@ export const useServersStore = defineStore('servers', () => {
   const servers = ref<ServerConfig[]>([]);
   const lastError = ref<Record<string, string>>({});
   const oauthStatus = ref<Record<string, OAuthStatus>>({});
+
+  /** Servers visible in the sidebar. */
+  const visibleServers = computed(() => servers.value);
 
   async function loadServers() {
     try {
@@ -122,6 +125,7 @@ export const useServersStore = defineStore('servers', () => {
 
   return {
     servers,
+    visibleServers,
     lastError,
     oauthStatus,
     loadServers,

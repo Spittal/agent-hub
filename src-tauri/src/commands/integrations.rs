@@ -1758,10 +1758,10 @@ pub fn restore_all_integration_configs(app: &AppHandle, port: u16) -> Result<(),
     let home = home_dir()?;
     let tools = get_tool_definitions(&home);
 
-    let (enabled_ids, servers) = {
+    let (enabled_ids, servers, profiles) = {
         let state = app.state::<SharedState>();
         let s = state.lock().unwrap();
-        (s.enabled_integrations.clone(), s.servers.clone())
+        (s.enabled_integrations.clone(), s.servers.clone(), s.profiles.clone())
     };
 
     for tool in tools {
@@ -1789,6 +1789,13 @@ pub fn restore_all_integration_configs(app: &AppHandle, port: u16) -> Result<(),
         }
     }
 
+    // Clean up per-project configs for all profile directories
+    for profile in &profiles {
+        for dir_path in &profile.directory_paths {
+            clean_project_configs(dir_path);
+        }
+    }
+
     Ok(())
 }
 
@@ -1798,7 +1805,7 @@ pub fn update_all_integration_configs(app: &AppHandle, port: u16) -> Result<(), 
     let home = home_dir()?;
     let tools = get_tool_definitions(&home);
 
-    let enabled_ids: Vec<String> = {
+    let enabled_ids = {
         let state = app.state::<SharedState>();
         let s = state.lock().unwrap();
         s.enabled_integrations.clone()
@@ -1818,5 +1825,417 @@ pub fn update_all_integration_configs(app: &AppHandle, port: u16) -> Result<(), 
         }
     }
 
+    // Also write per-project configs for any directory-mapped profiles
+    if let Err(e) = write_project_configs(app, port) {
+        warn!("Failed to write per-project configs: {e}");
+    }
+
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Per-project config writing — for directory-mapped profiles
+// ---------------------------------------------------------------------------
+
+/// Build proxy URL entries for a specific profile's servers.
+fn profile_proxy_urls(
+    app: &AppHandle,
+    port: u16,
+    profile: &crate::state::Profile,
+) -> Vec<(String, String)> {
+    let state = app.state::<SharedState>();
+    let s = state.lock().unwrap();
+
+    let mut entries = Vec::new();
+
+    if profile.features.discovery {
+        entries.push(discovery_proxy_url(port, "project"));
+    } else {
+        for srv in s.servers.iter().filter(|srv| {
+            srv.status == Some(ServerStatus::Connected) && srv.managed_by.is_none()
+        }) {
+            if profile.server_ids.contains(&srv.id) {
+                entries.push((
+                    srv.name.clone(),
+                    format!("http://localhost:{port}/mcp/{}?client=project", srv.id),
+                ));
+            }
+        }
+    }
+
+    // Managed servers gated by features
+    let profile_db = profile.features.memory_db.unwrap_or(0);
+    let target_managed_by = crate::commands::memory::managed_by_for_db(profile_db);
+
+    for srv in s.servers.iter().filter(|srv| {
+        srv.status == Some(ServerStatus::Connected) && srv.managed_by.is_some()
+    }) {
+        let managed_by = srv.managed_by.as_deref().unwrap_or("");
+
+        // Memory servers: only include the one matching this profile's DB
+        if managed_by == "memory" || managed_by.starts_with("memory-db-") {
+            if !profile.features.memory {
+                continue;
+            }
+            if managed_by != target_managed_by {
+                continue;
+            }
+            entries.push((
+                srv.name.clone(),
+                format!("http://localhost:{port}/mcp/{}?client=project", srv.id),
+            ));
+            continue;
+        }
+
+        // Other managed servers: check server_ids
+        if !profile.server_ids.contains(&srv.id) {
+            continue;
+        }
+        entries.push((
+            srv.name.clone(),
+            format!("http://localhost:{port}/mcp/{}?client=project", srv.id),
+        ));
+    }
+
+    entries
+}
+
+/// Write per-project configs to all directories mapped in any profile.
+/// For each profile directory:
+/// - Claude Code: writes `disabledMcpServers` to `~/.claude.json` project entries
+/// - Cursor: writes per-project `.cursor/mcp.json` with disabled overrides
+/// Also cleans up legacy `.claude/settings.json` proxy entries.
+fn write_project_configs(app: &AppHandle, port: u16) -> Result<(), AppError> {
+    let state = app.state::<SharedState>();
+    let profiles = {
+        let s = state.lock().unwrap();
+        s.profiles.clone()
+    };
+
+    // Global entries = all servers that every AI tool normally sees
+    let global_cc_entries = connected_proxy_urls(app, port, "claude-code");
+    let global_cursor_entries = connected_proxy_urls(app, port, "cursor");
+
+    for profile in &profiles {
+        for dir_path in &profile.directory_paths {
+            let dir = PathBuf::from(dir_path);
+            if !dir.is_dir() {
+                warn!("Profile '{}' maps non-existent directory: {}", profile.name, dir_path);
+                continue;
+            }
+
+            let profile_entries = profile_proxy_urls(app, port, profile);
+
+            // Claude Code: write disabledMcpServers to ~/.claude.json
+            if let Err(e) = write_claude_code_project_config(dir_path, &global_cc_entries, &profile_entries) {
+                warn!("Failed to write Claude Code project config for {dir_path}: {e}");
+            } else {
+                info!("Wrote Claude Code project config (disabledMcpServers) for {dir_path}");
+            }
+
+            // Cursor: write per-project .cursor/mcp.json with disabled overrides
+            let cursor_config_path = dir.join(".cursor/mcp.json");
+            if let Err(e) = write_cursor_project_config(&cursor_config_path, &global_cursor_entries, &profile_entries) {
+                warn!("Failed to write Cursor project config for {dir_path}: {e}");
+            } else {
+                info!("Wrote Cursor project config to {}", cursor_config_path.display());
+            }
+
+            // Clean up legacy .claude/settings.json proxy entries (migration)
+            let legacy_path = dir.join(".claude/settings.json");
+            if legacy_path.exists() {
+                clean_legacy_claude_settings(&legacy_path);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Write `disabledMcpServers` to `~/.claude.json` for a specific project directory.
+/// Excluded servers = global server names NOT in the profile's entries.
+fn write_claude_code_project_config(
+    dir_path: &str,
+    global_entries: &[(String, String)],
+    profile_entries: &[(String, String)],
+) -> Result<(), AppError> {
+    let home = home_dir()?;
+    let config_path = home.join(".claude.json");
+
+    let mut config = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)?;
+        serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Ensure projects object exists
+    if !config.get("projects").is_some_and(|v| v.is_object()) {
+        config["projects"] = serde_json::json!({});
+    }
+
+    let projects = config["projects"].as_object_mut().expect("projects is object");
+
+    // Ensure this directory's entry exists
+    if !projects.get(dir_path).is_some_and(|v| v.is_object()) {
+        projects.insert(dir_path.to_string(), serde_json::json!({}));
+    }
+
+    let project_entry = projects.get_mut(dir_path).expect("project entry exists").as_object_mut().expect("project entry is object");
+
+    // Compute excluded: global proxy server names NOT in profile entries
+    let profile_names: std::collections::HashSet<&str> = profile_entries.iter().map(|(n, _)| n.as_str()).collect();
+    let global_names: Vec<&str> = global_entries.iter().map(|(n, _)| n.as_str()).collect();
+
+    let excluded: Vec<String> = global_names
+        .iter()
+        .filter(|name| !profile_names.contains(**name))
+        .map(|name| name.to_string())
+        .collect();
+
+    // Preserve user-disabled entries that aren't proxy-related
+    let mut disabled = Vec::new();
+    if let Some(existing) = project_entry.get("disabledMcpServers").and_then(|v| v.as_array()) {
+        for entry in existing {
+            if let Some(name) = entry.as_str() {
+                // Keep entries that aren't proxy server names (user-disabled)
+                if !global_names.contains(&name) {
+                    disabled.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    // Add our excluded servers
+    disabled.extend(excluded);
+
+    if disabled.is_empty() {
+        project_entry.remove("disabledMcpServers");
+    } else {
+        project_entry.insert(
+            "disabledMcpServers".to_string(),
+            serde_json::Value::Array(disabled.into_iter().map(serde_json::Value::String).collect()),
+        );
+    }
+
+    // Clean up empty project entry
+    if project_entry.is_empty() {
+        projects.remove(dir_path);
+    }
+
+    let content = serde_json::to_string_pretty(&config)?;
+    std::fs::write(&config_path, content)?;
+
+    Ok(())
+}
+
+/// Write per-project Cursor config at `.cursor/mcp.json`.
+/// Profile-included servers get normal proxy entries.
+/// Profile-excluded servers get `"disabled": true` entries to override the global config.
+fn write_cursor_project_config(
+    config_path: &Path,
+    global_entries: &[(String, String)],
+    profile_entries: &[(String, String)],
+) -> Result<(), AppError> {
+    let mut config = if config_path.exists() {
+        let content = std::fs::read_to_string(config_path)?;
+        serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let existing_servers = config
+        .get("mcpServers")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut mcp_servers = serde_json::Map::new();
+
+    // Keep non-proxy entries from existing config
+    for (name, value) in &existing_servers {
+        let is_ours = value
+            .get("url")
+            .and_then(|u| u.as_str())
+            .map_or(false, is_proxy_url);
+        // Also check for our disabled overrides (proxy entries with disabled: true)
+        let is_disabled_proxy = value
+            .get("disabled")
+            .and_then(|d| d.as_bool())
+            .unwrap_or(false)
+            && value.get("url").and_then(|u| u.as_str()).map_or(false, is_proxy_url);
+        if !is_ours && !is_disabled_proxy {
+            mcp_servers.insert(name.clone(), value.clone());
+        }
+    }
+
+    let profile_names: std::collections::HashSet<&str> = profile_entries.iter().map(|(n, _)| n.as_str()).collect();
+
+    // Add profile-included servers as normal entries
+    for (name, url) in profile_entries {
+        mcp_servers.insert(name.clone(), serde_json::json!({ "type": "http", "url": url }));
+    }
+
+    // Add profile-excluded servers with disabled: true to override global config
+    for (name, url) in global_entries {
+        if !profile_names.contains(name.as_str()) {
+            mcp_servers.insert(name.clone(), serde_json::json!({ "type": "http", "url": url, "disabled": true }));
+        }
+    }
+
+    config["mcpServers"] = serde_json::Value::Object(mcp_servers);
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let content = serde_json::to_string_pretty(&config)?;
+    std::fs::write(config_path, content)?;
+
+    Ok(())
+}
+
+/// Clean proxy-related `disabledMcpServers` entries from `~/.claude.json` for a directory.
+fn clean_claude_code_project_config(dir_path: &str) {
+    let home = match home_dir() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    let config_path = home.join(".claude.json");
+    if !config_path.exists() {
+        return;
+    }
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let mut config = match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let changed = if let Some(projects) = config.get_mut("projects").and_then(|v| v.as_object_mut()) {
+        if let Some(entry) = projects.get_mut(dir_path).and_then(|v| v.as_object_mut()) {
+            if entry.remove("disabledMcpServers").is_some() {
+                // Remove empty project entry
+                if entry.is_empty() {
+                    projects.remove(dir_path);
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if changed {
+        if let Ok(updated) = serde_json::to_string_pretty(&config) {
+            let _ = std::fs::write(&config_path, updated);
+            info!("Cleaned disabledMcpServers from ~/.claude.json for {dir_path}");
+        }
+    }
+}
+
+/// Clean proxy entries AND disabled-proxy entries from a per-project `.cursor/mcp.json`.
+fn clean_cursor_project_config(config_path: &Path) {
+    if !config_path.exists() {
+        return;
+    }
+
+    let content = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let mut config = match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    if let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+        let proxy_keys: Vec<String> = servers
+            .iter()
+            .filter(|(_, v)| {
+                v.get("url")
+                    .and_then(|u| u.as_str())
+                    .map_or(false, is_proxy_url)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        if proxy_keys.is_empty() {
+            return;
+        }
+
+        for key in proxy_keys {
+            servers.remove(&key);
+        }
+
+        if let Ok(updated) = serde_json::to_string_pretty(&config) {
+            let _ = std::fs::write(config_path, updated);
+            info!("Cleaned proxy entries from {}", config_path.display());
+        }
+    }
+}
+
+/// Remove proxy entries from legacy `.claude/settings.json` files (migration from old approach).
+pub fn clean_legacy_claude_settings(path: &Path) {
+    if !path.exists() {
+        return;
+    }
+
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let mut config = match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    if let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+        let proxy_keys: Vec<String> = servers
+            .iter()
+            .filter(|(_, v)| {
+                v.get("url")
+                    .and_then(|u| u.as_str())
+                    .map_or(false, is_proxy_url)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        if proxy_keys.is_empty() {
+            return;
+        }
+
+        for key in proxy_keys {
+            servers.remove(&key);
+        }
+
+        if let Ok(updated) = serde_json::to_string_pretty(&config) {
+            let _ = std::fs::write(path, updated);
+            info!("Cleaned legacy proxy entries from {}", path.display());
+        }
+    }
+}
+
+/// Remove Agent Hub proxy entries from per-project config files for a specific directory.
+pub fn clean_project_configs(dir_path: &str) {
+    let dir = PathBuf::from(dir_path);
+
+    // Clean Claude Code project config in ~/.claude.json
+    clean_claude_code_project_config(dir_path);
+
+    // Clean per-project Cursor config
+    clean_cursor_project_config(&dir.join(".cursor/mcp.json"));
+
+    // Clean legacy .claude/settings.json
+    clean_legacy_claude_settings(&dir.join(".claude/settings.json"));
 }

@@ -6,7 +6,7 @@ import { storeToRefs } from 'pinia';
 import { statusColor } from '@/composables/useServerStatus';
 
 const store = useServersStore();
-const { servers } = storeToRefs(store);
+const { servers, visibleServers } = storeToRefs(store);
 
 function managedByLabel(managedBy: string): string {
   if (managedBy === 'memory') return 'Memory';
@@ -68,7 +68,7 @@ async function deleteServer(id: string) {
 <template>
   <div>
     <router-link
-      v-for="server in servers"
+      v-for="server in visibleServers"
       :key="server.id"
       :to="'/servers/' + server.id"
       class="group flex items-center gap-2 border-b border-border/50 px-3 py-2 transition-colors hover:bg-surface-2"
@@ -90,7 +90,7 @@ async function deleteServer(id: string) {
       <span v-if="!server.enabled" class="ml-auto text-[10px] text-text-muted">off</span>
     </router-link>
     <div
-      v-if="servers.length === 0"
+      v-if="visibleServers.length === 0"
       class="px-3 py-6 text-center text-xs text-text-muted"
     >
       No servers configured

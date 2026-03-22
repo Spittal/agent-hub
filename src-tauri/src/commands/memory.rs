@@ -592,6 +592,209 @@ fn find_memory_server(servers: &[ServerConfig]) -> Option<&ServerConfig> {
         .find(|s| s.managed_by.as_deref() == Some("memory"))
 }
 
+/// Container name for a per-DB MCP server. DB 0 uses the main MCP_CONTAINER.
+fn mcp_container_for_db(db: u8) -> String {
+    if db == 0 {
+        MCP_CONTAINER.to_string()
+    } else {
+        format!("agent-hub-mcp-db{db}")
+    }
+}
+
+/// Host port for a per-DB MCP server.
+fn mcp_port_for_db(db: u8) -> u16 {
+    9050 + db as u16
+}
+
+/// The `managed_by` value for a per-DB memory server.
+pub fn managed_by_for_db(db: u8) -> String {
+    if db == 0 {
+        "memory".to_string()
+    } else {
+        format!("memory-db-{db}")
+    }
+}
+
+/// Collect unique memory_db values from all profiles. Returns sorted unique DBs.
+fn collect_profile_dbs(profiles: &[crate::state::Profile]) -> Vec<u8> {
+    let mut dbs: Vec<u8> = profiles
+        .iter()
+        .filter(|p| p.features.memory)
+        .map(|p| p.features.memory_db.unwrap_or(0))
+        .collect();
+    dbs.sort();
+    dbs.dedup();
+    dbs
+}
+
+/// Sync per-DB MCP containers with profiles' memory_db values.
+/// Starts missing containers, stops orphaned ones.
+/// Must be called when profiles change their memory_db, or on enable/disable.
+pub async fn sync_memory_containers(app: &AppHandle) -> Result<(), AppError> {
+    let (profiles, env_base, redis_url_base) = {
+        let state = app.state::<SharedState>();
+        let s = state.lock().unwrap();
+
+        // Only sync if memory is enabled (main memory server exists)
+        if find_memory_server(&s.servers).is_none() {
+            return Ok(());
+        }
+
+        let has_local_redis = s.redis_config.source == RedisSource::Local;
+        let has_tunnel = s.redis_config.source == RedisSource::Remote
+            && s.redis_config.tunnel_command.is_some();
+
+        let redis_url_base = if has_local_redis {
+            format!("redis://{REDIS_CONTAINER}:6379")
+        } else if has_tunnel {
+            let port = s.redis_config.tunnel_local_port.unwrap_or(6379);
+            format!("redis://host.docker.internal:{port}")
+        } else {
+            s.redis_config.url.clone().unwrap_or_else(|| "redis://localhost:6379".into())
+        };
+
+        // Build base env vars (same as enable_memory)
+        let mut env = std::collections::HashMap::new();
+        env.insert("LONG_TERM_MEMORY".into(), "True".into());
+        env.insert("ENABLE_TOPIC_EXTRACTION".into(), "True".into());
+        env.insert("ENABLE_NER".into(), "True".into());
+        env.insert("DISABLE_AUTH".into(), "true".into());
+        env.insert(
+            "REDISVL_VECTOR_DIMENSIONS".into(),
+            s.embedding_config.dimensions.to_string(),
+        );
+
+        match s.embedding_config.provider {
+            EmbeddingProvider::Ollama => {
+                env.insert(
+                    "EMBEDDING_MODEL".into(),
+                    format!("ollama/{}", s.embedding_config.model),
+                );
+                env.insert(
+                    "OLLAMA_API_BASE".into(),
+                    format!("http://{OLLAMA_CONTAINER}:11434"),
+                );
+            }
+            EmbeddingProvider::Openai => {
+                env.insert("GENERATION_MODEL".into(), "gpt-4o-mini".into());
+                env.insert("EMBEDDING_MODEL".into(), s.embedding_config.model.clone());
+                if let Some(api_key) = load_openai_api_key(app) {
+                    env.insert("OPENAI_API_KEY".into(), api_key);
+                }
+            }
+        }
+
+        (s.profiles.clone(), env, redis_url_base)
+    };
+
+    let needed_dbs = collect_profile_dbs(&profiles);
+
+    // Find currently running per-DB containers
+    let mut running_dbs: Vec<u8> = Vec::new();
+    for db in 0..=15u8 {
+        let container = mcp_container_for_db(db);
+        if is_container_running(&container).await {
+            running_dbs.push(db);
+        }
+    }
+
+    // Start missing containers (skip DB 0 — that's the main MCP_CONTAINER managed by enable_memory)
+    for &db in &needed_dbs {
+        if db == 0 {
+            continue; // Main container already managed
+        }
+        let container = mcp_container_for_db(db);
+        if is_container_running(&container).await {
+            continue;
+        }
+
+        let port = mcp_port_for_db(db);
+        let redis_url = format!("{redis_url_base}/{db}");
+
+        let mut env = env_base.clone();
+        env.insert("REDIS_URL".into(), redis_url);
+
+        let mut mcp_args = docker_run(&[
+            "run", "-d", "--name", &container, "--network", NETWORK,
+            "-p", &format!("{port}:9000"),
+        ]);
+        append_env(&mut mcp_args, &env);
+        mcp_args.push(MEMORY_IMAGE.into());
+        mcp_args.extend_from_slice(&[
+            "agent-memory".into(), "mcp".into(), "--mode".into(), "sse".into(),
+        ]);
+
+        if let Err(e) = ensure_container(app, &container, &mcp_args).await {
+            tracing::warn!("Failed to start MCP container for DB {db}: {e}");
+            continue;
+        }
+
+        // Wait for SSE endpoint
+        let sse_url = format!("http://localhost:{port}/sse");
+        if let Err(e) = wait_for_sse_ready(&sse_url, 30).await {
+            tracing::warn!("MCP container for DB {db} not ready: {e}");
+            continue;
+        }
+
+        // Create a managed ServerConfig for this DB
+        let managed_by = managed_by_for_db(db);
+        let server = ServerConfig {
+            id: Uuid::new_v4().to_string(),
+            name: format!("Memory (DB {db})"),
+            enabled: true,
+            transport: ServerTransport::Http,
+            command: None,
+            args: None,
+            env: None,
+            url: Some(sse_url),
+            headers: None,
+            tags: None,
+            status: Some(ServerStatus::Disconnected),
+            last_connected: None,
+            managed: None,
+            managed_by: Some(managed_by),
+            registry_name: None,
+        };
+
+        {
+            let state = app.state::<SharedState>();
+            let mut s = state.lock().unwrap();
+            // Only add if not already present
+            if !s.servers.iter().any(|srv| srv.managed_by.as_deref() == Some(&managed_by_for_db(db))) {
+                s.servers.push(server.clone());
+                save_servers(app, &s.servers);
+            }
+        }
+
+        info!("Started MCP container for DB {db} on port {port}");
+    }
+
+    // Stop orphaned containers (DBs no longer needed, skip DB 0)
+    for &db in &running_dbs {
+        if db == 0 {
+            continue;
+        }
+        if !needed_dbs.contains(&db) {
+            let container = mcp_container_for_db(db);
+            stop_container(&container).await;
+
+            // Remove the managed server from state
+            let managed_by = managed_by_for_db(db);
+            let state = app.state::<SharedState>();
+            let mut s = state.lock().unwrap();
+            if let Some(id) = s.servers.iter().find(|srv| srv.managed_by.as_deref() == Some(&managed_by)).map(|srv| srv.id.clone()) {
+                s.connections.remove(&id);
+                s.servers.retain(|srv| srv.id != id);
+                save_servers(app, &s.servers);
+            }
+
+            info!("Stopped orphaned MCP container for DB {db}");
+        }
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_memory_status(state: State<'_, SharedState>) -> Result<MemoryStatus, AppError> {
     get_memory_status_inner(&state).await
@@ -996,6 +1199,11 @@ pub async fn enable_memory(
         "memory",
     );
 
+    // Start per-DB MCP containers for any profiles using non-default DBs
+    if let Err(e) = sync_memory_containers(&app).await {
+        tracing::warn!("Failed to sync per-DB memory containers: {e}");
+    }
+
     info!("Memory server enabled (HTTP SSE on port 9050)");
     Ok(server)
 }
@@ -1053,6 +1261,25 @@ pub async fn disable_memory(
     info!("Stopping memory containers");
 
     stop_container(MCP_CONTAINER).await;
+
+    // Stop all per-DB MCP containers
+    for db in 1..=15u8 {
+        let container = mcp_container_for_db(db);
+        if is_container_running(&container).await {
+            stop_container(&container).await;
+        }
+    }
+    // Remove per-DB managed servers from state
+    {
+        let mut s = state.lock().unwrap();
+        s.servers.retain(|srv| {
+            !srv.managed_by
+                .as_deref()
+                .map_or(false, |m| m.starts_with("memory-db-"))
+        });
+        save_servers(&app, &s.servers);
+    }
+
     stop_container(API_CONTAINER).await;
     if redis_source == RedisSource::Local {
         stop_container(REDIS_CONTAINER).await;
@@ -1201,9 +1428,31 @@ pub async fn restart_memory(
     restart_container(API_CONTAINER).await?;
     restart_container(MCP_CONTAINER).await?;
 
+    // Restart all per-DB MCP containers
+    for db in 1..=15u8 {
+        let container = mcp_container_for_db(db);
+        if is_container_running(&container).await {
+            if let Err(e) = restart_container(&container).await {
+                tracing::warn!("Failed to restart MCP container for DB {db}: {e}");
+            }
+        }
+    }
+
     // Wait for MCP server to be ready
     emit_progress(&app, "Waiting for memory server...");
     wait_for_sse_ready("http://localhost:9050/sse", 30).await?;
+
+    // Wait for per-DB MCP servers too
+    for db in 1..=15u8 {
+        let container = mcp_container_for_db(db);
+        if is_container_running(&container).await {
+            let port = mcp_port_for_db(db);
+            let sse_url = format!("http://localhost:{port}/sse");
+            if let Err(e) = wait_for_sse_ready(&sse_url, 30).await {
+                tracing::warn!("MCP container for DB {db} not ready after restart: {e}");
+            }
+        }
+    }
 
     // Ensure skill files are intact
     install_memory_skill();
