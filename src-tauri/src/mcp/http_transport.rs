@@ -137,12 +137,25 @@ impl HttpTransport {
         let post_url_clone = post_url.clone();
         let pending_clone = pending.clone();
         let url_str = url.to_string();
+        // Whenever eventsource-client reconnects (post-sleep, transient drop, etc.) the
+        // upstream MCP server issues a fresh session that has not run the `initialize`
+        // handshake yet. Without re-init, every subsequent `tools/call` returns
+        // -32602 ("Received request before initialization was complete"). This flag is
+        // raised on every `SSE::Connected` and consumed by the next `endpoint` event,
+        // which then spawns a task to redo the handshake on the new session.
+        let needs_reinit = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let needs_reinit_clone = needs_reinit.clone();
+        let reinit_client = client.clone();
+        let reinit_headers = headers.clone();
+        let reinit_token = access_token.clone();
 
         let sse_reader = tokio::spawn(async move {
             loop {
                 match stream.try_next().await {
                     Ok(Some(SSE::Connected(_))) => {
                         info!("Legacy SSE (re)connected to {url_str}");
+                        needs_reinit_clone
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
                         drain_pending_with_error(
                             &pending_clone,
                             "SSE stream reconnected; request lost",
@@ -155,9 +168,39 @@ impl HttpTransport {
                             match resolve_endpoint(event.data.trim(), &url_str) {
                                 Ok(new_url) => {
                                     let mut p = post_url_clone.lock().await;
-                                    if *p != new_url {
+                                    let changed = *p != new_url;
+                                    if changed {
                                         info!("Legacy SSE: endpoint updated to {new_url}");
                                         *p = new_url;
+                                    }
+                                    drop(p);
+                                    if changed
+                                        && needs_reinit_clone
+                                            .swap(false, std::sync::atomic::Ordering::SeqCst)
+                                    {
+                                        let post_url_init = post_url_clone.clone();
+                                        let pending_init = pending_clone.clone();
+                                        let client_init = reinit_client.clone();
+                                        let headers_init = reinit_headers.clone();
+                                        let token_init = reinit_token.clone();
+                                        tokio::spawn(async move {
+                                            match perform_reinitialize(
+                                                &client_init,
+                                                &post_url_init,
+                                                &pending_init,
+                                                &headers_init,
+                                                &token_init,
+                                            )
+                                            .await
+                                            {
+                                                Ok(()) => info!(
+                                                    "Legacy SSE: MCP session re-initialized"
+                                                ),
+                                                Err(e) => warn!(
+                                                    "Legacy SSE: re-initialize failed: {e}"
+                                                ),
+                                            }
+                                        });
                                     }
                                 }
                                 Err(e) => warn!("Legacy SSE: failed to resolve endpoint: {e}"),
@@ -557,6 +600,105 @@ async fn drain_pending_with_error(pending: &PendingMap, msg: &str) {
             }),
         });
     }
+}
+
+/// Re-run the MCP `initialize` + `notifications/initialized` handshake on a freshly
+/// reconnected legacy-SSE session. The reader task spawns this whenever a `Connected`
+/// event is followed by a new `endpoint` (i.e. eventsource-client reconnected and the
+/// upstream server issued a new session). Params match those sent by McpClient on
+/// first connect (see `client.rs::initialize`); they are duplicated here because the
+/// reader task does not hold a reference to the McpClient. If they drift, fix both.
+async fn perform_reinitialize(
+    client: &reqwest::Client,
+    post_url: &Arc<Mutex<String>>,
+    pending: &PendingMap,
+    headers: &HashMap<String, String>,
+    access_token: &Arc<Mutex<Option<String>>>,
+) -> Result<(), AppError> {
+    let init_id = format!(
+        "reinit-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+
+    let init_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": init_id,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": { "roots": null, "sampling": null },
+            "clientInfo": { "name": "Agent Hub", "version": env!("CARGO_PKG_VERSION") }
+        }
+    });
+
+    let (tx, rx) = oneshot::channel();
+    pending.lock().await.insert(init_id.clone(), tx);
+
+    let post = async |body: &serde_json::Value| -> Result<(), AppError> {
+        let url = post_url.lock().await.clone();
+        let mut req = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+        for (k, v) in headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        let tok = access_token.lock().await;
+        if let Some(ref token) = *tok {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+        drop(tok);
+        let response = req
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| AppError::Transport(format!("re-init POST failed: {e}")))?;
+        if !response.status().is_success() {
+            return Err(AppError::Transport(format!(
+                "re-init POST returned status {}",
+                response.status()
+            )));
+        }
+        Ok(())
+    };
+
+    if let Err(e) = post(&init_request).await {
+        pending.lock().await.remove(&init_id);
+        return Err(e);
+    }
+
+    match tokio::time::timeout(Duration::from_secs(10), rx).await {
+        Ok(Ok(rpc)) => {
+            if let Some(err) = rpc.error {
+                return Err(AppError::Protocol(format!(
+                    "re-init returned error {}: {}",
+                    err.code, err.message
+                )));
+            }
+        }
+        Ok(Err(_)) => {
+            return Err(AppError::Transport(
+                "re-init oneshot dropped before response".to_string(),
+            ));
+        }
+        Err(_) => {
+            pending.lock().await.remove(&init_id);
+            return Err(AppError::Transport(
+                "Timed out waiting for re-init response".to_string(),
+            ));
+        }
+    }
+
+    let initialized_notification = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    });
+    post(&initialized_notification).await?;
+
+    Ok(())
 }
 
 /// Extract JSON-RPC response data from an SSE response body (streamable HTTP mode).
