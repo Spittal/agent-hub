@@ -405,7 +405,7 @@ fn parse_codex_toml(path: &Path) -> (bool, u16, Vec<ExistingMcpServer>) {
         Ok(c) => c,
         Err(_) => return (false, 0, Vec::new()),
     };
-    let config: toml::Value = match content.parse() {
+    let config: toml::Value = match toml::from_str(&content) {
         Ok(v) => v,
         Err(_) => return (false, 0, Vec::new()),
     };
@@ -664,8 +664,7 @@ fn import_zed(path: &Path) -> Result<Vec<ServerConfig>, AppError> {
 
 fn import_codex_toml(path: &Path) -> Result<Vec<ServerConfig>, AppError> {
     let content = std::fs::read_to_string(path)?;
-    let config: toml::Value = content
-        .parse()
+    let config: toml::Value = toml::from_str(&content)
         .map_err(|e| AppError::Protocol(format!("Invalid TOML: {e}")))?;
     let servers_table = match config.get("mcp_servers").and_then(|v| v.as_table()) {
         Some(t) => t,
@@ -1247,9 +1246,8 @@ fn write_codex_config(
 
     let mut config = if path.exists() {
         let content = std::fs::read_to_string(path)?;
-        content
-            .parse::<toml::Value>()
-            .unwrap_or(toml::Value::Table(toml::map::Map::new()))
+        toml::from_str::<toml::Value>(&content)
+            .map_err(|e| AppError::Protocol(format!("Invalid TOML: {e}")))?
     } else {
         toml::Value::Table(toml::map::Map::new())
     };
@@ -1381,8 +1379,7 @@ fn remove_zed_entries(path: &Path) -> Result<(), AppError> {
 
 fn remove_codex_entries(path: &Path) -> Result<(), AppError> {
     let content = std::fs::read_to_string(path)?;
-    let mut config: toml::Value = content
-        .parse()
+    let mut config: toml::Value = toml::from_str(&content)
         .map_err(|e| AppError::Protocol(format!("Invalid TOML: {e}")))?;
 
     if let Some(table) = config.as_table_mut() {
@@ -1611,9 +1608,8 @@ fn write_native_codex(servers: &[ServerConfig], path: &Path) -> Result<(), AppEr
 
     let mut config = if path.exists() {
         let content = std::fs::read_to_string(path)?;
-        content
-            .parse::<toml::Value>()
-            .unwrap_or(toml::Value::Table(toml::map::Map::new()))
+        toml::from_str::<toml::Value>(&content)
+            .map_err(|e| AppError::Protocol(format!("Invalid TOML: {e}")))?
     } else {
         toml::Value::Table(toml::map::Map::new())
     };
