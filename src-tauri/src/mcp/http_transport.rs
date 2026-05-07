@@ -1,15 +1,18 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
-use futures::StreamExt;
+use eventsource_client::{Client as _, ClientBuilder as SseClientBuilder, ReconnectOptionsBuilder, SSE};
+use futures::TryStreamExt;
+use launchdarkly_sdk_transport::HyperTransport;
 use reqwest::Client;
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::error::AppError;
-use crate::mcp::types::{JsonRpcRequest, JsonRpcResponse};
+use crate::mcp::types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 
 /// Pending request senders, keyed by stringified JSON-RPC id.
 type PendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>;
@@ -21,12 +24,16 @@ type PendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>;
 ///   The server returns the response directly in the HTTP response body.
 /// - **Legacy SSE**: GET an SSE endpoint that returns an `endpoint` event,
 ///   then POST to that URL. Responses arrive on the SSE stream, not in
-///   the POST response body.
+///   the POST response body. Auto-reconnects via `eventsource-client`;
+///   the post URL is refreshed whenever the server sends a new `endpoint`
+///   event after a reconnect.
 pub struct HttpTransport {
     next_id: AtomicU64,
     client: Client,
-    /// The URL to POST JSON-RPC requests to.
-    post_url: String,
+    /// The URL to POST JSON-RPC requests to. Wrapped in a Mutex so the
+    /// legacy-SSE reader task can update it on reconnect; for streamable
+    /// HTTP this never changes after construction.
+    post_url: Arc<Mutex<String>>,
     /// Extra headers to include on every request (e.g. Authorization).
     headers: HashMap<String, String>,
     /// Session ID returned by the server, sent on subsequent requests.
@@ -38,7 +45,7 @@ pub struct HttpTransport {
     /// For legacy SSE: pending request senders keyed by JSON-RPC id.
     pending: PendingMap,
     /// Background SSE reader task handle (legacy SSE only).
-    _sse_reader: Option<JoinHandle<()>>,
+    sse_reader: Option<JoinHandle<()>>,
 }
 
 impl HttpTransport {
@@ -55,150 +62,128 @@ impl HttpTransport {
         let client = Client::new();
         let token = Arc::new(Mutex::new(access_token));
 
-        // Heuristic: if the URL ends with /sse, use legacy SSE mode
         if url.ends_with("/sse") {
             info!("URL ends with /sse, using legacy SSE transport for {url}");
             return Self::connect_legacy_sse(url, headers, client, token).await;
         }
 
-        // Default: streamable HTTP — just store the URL, no probing needed.
         info!("Using streamable HTTP transport for {url}");
 
         Ok(Self {
             next_id: AtomicU64::new(1),
             client,
-            post_url: url.to_string(),
+            post_url: Arc::new(Mutex::new(url.to_string())),
             headers,
             session_id: Arc::new(Mutex::new(None)),
             access_token: token,
             legacy_sse: false,
             pending: Arc::new(Mutex::new(HashMap::new())),
-            _sse_reader: None,
+            sse_reader: None,
         })
     }
 
-    /// Legacy SSE connection: GET the URL to establish the SSE stream,
-    /// find the `endpoint` event, then spawn a background task to read
-    /// responses from the stream.
+    /// Legacy SSE connection. Opens an `eventsource-client` stream, waits for
+    /// the first `endpoint` event to discover the POST URL, then spawns a
+    /// persistent reader that dispatches responses and refreshes the POST
+    /// URL on reconnect. The library handles reconnection with exponential
+    /// backoff, so a transient network drop (e.g. macOS sleep/wake) recovers
+    /// without user intervention.
     async fn connect_legacy_sse(
         url: &str,
         headers: HashMap<String, String>,
         client: Client,
         access_token: Arc<Mutex<Option<String>>>,
     ) -> Result<Self, AppError> {
-        let mut req = client.get(url).header("Accept", "text/event-stream");
+        let mut builder = SseClientBuilder::for_url(url)
+            .map_err(|e| AppError::Transport(format!("Invalid SSE URL: {e}")))?
+            .reconnect(
+                ReconnectOptionsBuilder::new(true)
+                    .retry_initial(true)
+                    .delay(Duration::from_secs(1))
+                    .backoff_factor(2)
+                    .delay_max(Duration::from_secs(60))
+                    .build(),
+            );
 
         for (k, v) in &headers {
-            req = req.header(k.as_str(), v.as_str());
+            builder = builder
+                .header(k.as_str(), v.as_str())
+                .map_err(|e| AppError::Transport(format!("Invalid header {k}: {e}")))?;
         }
 
-        // Inject Bearer token if available
         {
             let tok = access_token.lock().await;
             if let Some(ref token) = *tok {
-                req = req.header("Authorization", format!("Bearer {token}"));
+                builder = builder
+                    .header("Authorization", &format!("Bearer {token}"))
+                    .map_err(|e| AppError::Transport(format!("Invalid auth header: {e}")))?;
             }
         }
 
-        let response = req
-            .send()
-            .await
-            .map_err(|e| AppError::Transport(format!("SSE GET request failed: {e}")))?;
+        let transport = HyperTransport::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(60))
+            .build_https()
+            .map_err(|e| AppError::Transport(format!("Failed to build SSE transport: {e}")))?;
 
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(AppError::AuthRequired(url.to_string()));
-        }
-
-        if !response.status().is_success() {
-            return Err(AppError::Transport(format!(
-                "SSE endpoint returned status {}",
-                response.status()
-            )));
-        }
-
-        let session_id = response
-            .headers()
-            .get("mcp-session-id")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-
-        // Stream the SSE response incrementally to find the `endpoint` event.
-        let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
-        let mut post_url: Option<String> = None;
-
-        let timeout = tokio::time::Duration::from_secs(15);
-        let deadline = tokio::time::Instant::now() + timeout;
-
-        loop {
-            match tokio::time::timeout_at(deadline, stream.next()).await {
-                Ok(Some(Ok(chunk))) => {
-                    let text = String::from_utf8_lossy(&chunk).replace("\r\n", "\n");
-                    buffer.push_str(&text);
-                    if let Ok(found) = parse_endpoint_from_sse(&buffer, url) {
-                        post_url = Some(found);
-                        break;
-                    }
-                }
-                Ok(Some(Err(e))) => {
-                    return Err(AppError::Transport(format!("SSE stream error: {e}")));
-                }
-                Ok(None) => break,
-                Err(_) => break,
-            }
-        }
-
-        let post_url = post_url.ok_or_else(|| {
-            AppError::Transport(
-                "Timed out waiting for 'endpoint' event from SSE stream".to_string(),
-            )
-        })?;
-
-        info!("Legacy SSE: discovered POST endpoint {post_url}");
-
-        // Clear any already-consumed events from the buffer so the background
-        // reader only processes new data.
-        let remaining = drain_consumed_events(&buffer);
-
-        // Spawn a background task that continues reading the SSE stream
-        // and dispatches JSON-RPC responses to pending request waiters.
+        let es_client = builder.build_with_transport(transport);
+        let mut stream = es_client.stream();
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+
+        let initial_endpoint = wait_for_initial_endpoint(&mut stream, url).await?;
+        info!("Legacy SSE: discovered POST endpoint {initial_endpoint}");
+
+        let post_url = Arc::new(Mutex::new(initial_endpoint));
+        let post_url_clone = post_url.clone();
         let pending_clone = pending.clone();
+        let url_str = url.to_string();
 
         let sse_reader = tokio::spawn(async move {
-            let mut buf = remaining;
             loop {
-                match stream.next().await {
-                    Some(Ok(chunk)) => {
-                        let text = String::from_utf8_lossy(&chunk).replace("\r\n", "\n");
-                        buf.push_str(&text);
-                        dispatch_sse_responses(&mut buf, &pending_clone).await;
+                match stream.try_next().await {
+                    Ok(Some(SSE::Connected(_))) => {
+                        info!("Legacy SSE (re)connected to {url_str}");
+                        drain_pending_with_error(
+                            &pending_clone,
+                            "SSE stream reconnected; request lost",
+                        )
+                        .await;
                     }
-                    Some(Err(e)) => {
-                        error!("Legacy SSE stream error: {e}");
+                    Ok(Some(SSE::Comment(_))) => {}
+                    Ok(Some(SSE::Event(event))) => {
+                        if event.event_type == "endpoint" {
+                            match resolve_endpoint(event.data.trim(), &url_str) {
+                                Ok(new_url) => {
+                                    let mut p = post_url_clone.lock().await;
+                                    if *p != new_url {
+                                        info!("Legacy SSE: endpoint updated to {new_url}");
+                                        *p = new_url;
+                                    }
+                                }
+                                Err(e) => warn!("Legacy SSE: failed to resolve endpoint: {e}"),
+                            }
+                        } else if event.event_type.is_empty() || event.event_type == "message" {
+                            match serde_json::from_str::<JsonRpcResponse>(&event.data) {
+                                Ok(rpc) => dispatch_response(&pending_clone, rpc).await,
+                                Err(e) => warn!(
+                                    "Legacy SSE: failed to parse JSON-RPC: {e} — raw: {}",
+                                    event.data
+                                ),
+                            }
+                        } else {
+                            debug!("Legacy SSE: ignoring event type={}", event.event_type);
+                        }
+                    }
+                    Ok(None) => {
+                        info!("Legacy SSE stream ended — reader task exiting");
                         break;
                     }
-                    None => {
-                        info!("Legacy SSE stream closed by server");
-                        break;
+                    Err(e) => {
+                        warn!("Legacy SSE stream error (auto-reconnect pending): {e}");
                     }
                 }
             }
-            // Clean up any remaining pending requests
-            let mut map = pending_clone.lock().await;
-            for (id, tx) in map.drain() {
-                warn!("SSE stream closed with pending request id={id}");
-                let _ = tx.send(JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: Some(serde_json::Value::String(id)),
-                    result: None,
-                    error: Some(crate::mcp::types::JsonRpcError {
-                        code: -1,
-                        message: "SSE stream closed".to_string(),
-                        data: None,
-                    }),
-                });
-            }
+            drain_pending_with_error(&pending_clone, "SSE stream closed").await;
         });
 
         Ok(Self {
@@ -206,11 +191,11 @@ impl HttpTransport {
             client,
             post_url,
             headers,
-            session_id: Arc::new(Mutex::new(session_id)),
+            session_id: Arc::new(Mutex::new(None)),
             access_token,
             legacy_sse: true,
             pending,
-            _sse_reader: Some(sse_reader),
+            sse_reader: Some(sse_reader),
         })
     }
 
@@ -232,19 +217,18 @@ impl HttpTransport {
         let body = serde_json::to_value(&request)
             .map_err(|e| AppError::Transport(format!("Failed to serialize request: {e}")))?;
 
-        debug!(
-            "HTTP send_request id={id} method={method} -> {}",
-            self.post_url
-        );
+        let post_url = self.post_url.lock().await.clone();
+        debug!("HTTP send_request id={id} method={method} -> {post_url}");
 
         if self.legacy_sse {
-            return self.send_request_legacy_sse(id, &body, method).await;
+            return self
+                .send_request_legacy_sse(id, &body, method, &post_url)
+                .await;
         }
 
-        // Streamable HTTP: POST and read response from body
         let mut req = self
             .client
-            .post(&self.post_url)
+            .post(&post_url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream");
 
@@ -282,7 +266,7 @@ impl HttpTransport {
         }
 
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(AppError::AuthRequired(self.post_url.clone()));
+            return Err(AppError::AuthRequired(post_url));
         }
 
         if !response.status().is_success() {
@@ -329,20 +313,19 @@ impl HttpTransport {
         id: u64,
         body: &serde_json::Value,
         method: &str,
+        post_url: &str,
     ) -> Result<JsonRpcResponse, AppError> {
         let id_str = id.to_string();
 
-        // Register a oneshot channel for this request's response
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = self.pending.lock().await;
             pending.insert(id_str.clone(), tx);
         }
 
-        // POST the request — legacy SSE servers return 200/202 with no useful body
         let mut req = self
             .client
-            .post(&self.post_url)
+            .post(post_url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream");
 
@@ -365,7 +348,6 @@ impl HttpTransport {
         }
 
         let response = req.json(body).send().await.map_err(|e| {
-            // Clean up pending entry on send failure
             let pending = self.pending.clone();
             let id_str = id_str.clone();
             tokio::spawn(async move {
@@ -376,10 +358,9 @@ impl HttpTransport {
 
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             self.pending.lock().await.remove(&id_str);
-            return Err(AppError::AuthRequired(self.post_url.clone()));
+            return Err(AppError::AuthRequired(post_url.to_string()));
         }
 
-        // Accept 200 and 202 as success for legacy SSE
         if !response.status().is_success() {
             self.pending.lock().await.remove(&id_str);
             return Err(AppError::Transport(format!(
@@ -388,8 +369,7 @@ impl HttpTransport {
             )));
         }
 
-        // Wait for the response to arrive on the SSE stream
-        let timeout = tokio::time::Duration::from_secs(60);
+        let timeout = Duration::from_secs(60);
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(rpc_response)) => {
                 if let Some(err) = &rpc_response.error {
@@ -425,11 +405,12 @@ impl HttpTransport {
         let body = serde_json::to_value(&request)
             .map_err(|e| AppError::Transport(format!("Failed to serialize notification: {e}")))?;
 
-        debug!("HTTP send_notification method={method}");
+        let post_url = self.post_url.lock().await.clone();
+        debug!("HTTP send_notification method={method} -> {post_url}");
 
         let mut req = self
             .client
-            .post(&self.post_url)
+            .post(&post_url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream");
 
@@ -466,7 +447,6 @@ impl HttpTransport {
             *sid = Some(new_sid.to_string());
         }
 
-        // Notifications may return 200 or 202; we don't need the body.
         if !response.status().is_success() {
             warn!(
                 "HTTP notification {method} returned status {}",
@@ -480,141 +460,102 @@ impl HttpTransport {
 
 impl Drop for HttpTransport {
     fn drop(&mut self) {
-        if let Some(ref handle) = self._sse_reader {
+        if let Some(ref handle) = self.sse_reader {
             handle.abort();
         }
     }
 }
 
-/// Parse the `endpoint` event from an SSE body to get the POST URL.
-fn parse_endpoint_from_sse(body: &str, base_url: &str) -> Result<String, AppError> {
-    let mut current_event = String::new();
-
-    for line in body.lines() {
-        if let Some(event_type) = line.strip_prefix("event:") {
-            current_event = event_type.trim().to_string();
-        } else if let Some(data) = line.strip_prefix("data:") {
-            if current_event == "endpoint" {
-                let endpoint = data.trim();
-                // The endpoint may be a relative path or absolute URL
-                if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
-                    return Ok(endpoint.to_string());
-                }
-                // Relative path — resolve against base URL origin
-                if let Some(slash_pos) = base_url[..base_url.len().saturating_sub(1)].rfind('/') {
-                    let origin_end = base_url
-                        .find("://")
-                        .map(|i| {
-                            base_url[i + 3..]
-                                .find('/')
-                                .map(|j| i + 3 + j)
-                                .unwrap_or(base_url.len())
-                        })
-                        .unwrap_or(slash_pos);
-                    let origin = &base_url[..origin_end];
-                    let path = if endpoint.starts_with('/') {
-                        endpoint.to_string()
-                    } else {
-                        format!("/{endpoint}")
-                    };
-                    return Ok(format!("{origin}{path}"));
-                }
-                return Ok(format!("{}/{}", base_url, endpoint));
-            }
-        }
-    }
-
-    Err(AppError::Transport(
-        "No 'endpoint' event found in SSE stream".to_string(),
-    ))
-}
-
-/// After finding the endpoint event, return any remaining unparsed data
-/// from the buffer (data after the endpoint event's double-newline).
-fn drain_consumed_events(buffer: &str) -> String {
-    // Find the endpoint event and skip past it
-    if let Some(idx) = buffer.find("event: endpoint") {
-        // Find the next double-newline after the endpoint event (event separator)
-        if let Some(end) = buffer[idx..].find("\n\n") {
-            let after = idx + end + 2;
-            if after < buffer.len() {
-                return buffer[after..].to_string();
-            }
-        }
-    }
-    // Also try without space after "event:"
-    if let Some(idx) = buffer.find("event:endpoint") {
-        if let Some(end) = buffer[idx..].find("\n\n") {
-            let after = idx + end + 2;
-            if after < buffer.len() {
-                return buffer[after..].to_string();
-            }
-        }
-    }
-    String::new()
-}
-
-/// Parse complete SSE events from the buffer and dispatch JSON-RPC responses
-/// to pending request waiters. Removes consumed events from the buffer,
-/// leaving any incomplete trailing data.
-async fn dispatch_sse_responses(buffer: &mut String, pending: &PendingMap) {
+/// Consume the SSE stream until the first `endpoint` event arrives, returning
+/// the resolved POST URL. Bounded by an outer timeout so a totally-down server
+/// fails fast on initial connect even though the library would keep retrying.
+async fn wait_for_initial_endpoint(
+    stream: &mut (impl futures::stream::TryStream<Ok = SSE, Error = eventsource_client::Error> + Unpin),
+    base_url: &str,
+) -> Result<String, AppError> {
+    let timeout = Duration::from_secs(15);
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        // Find a complete event (terminated by double newline)
-        let Some(event_end) = buffer.find("\n\n") else {
-            break;
-        };
-
-        let event_block = buffer[..event_end].to_string();
-        // Remove the consumed event + the \n\n separator
-        *buffer = buffer[event_end + 2..].to_string();
-
-        let mut event_type = String::new();
-        let mut data_parts = Vec::new();
-
-        for line in event_block.lines() {
-            if let Some(et) = line.strip_prefix("event:") {
-                event_type = et.trim().to_string();
-            } else if let Some(d) = line.strip_prefix("data:") {
-                data_parts.push(d.trim().to_string());
+        match tokio::time::timeout_at(deadline, stream.try_next()).await {
+            Ok(Ok(Some(SSE::Event(event)))) if event.event_type == "endpoint" => {
+                return resolve_endpoint(event.data.trim(), base_url);
+            }
+            Ok(Ok(Some(_))) => continue,
+            Ok(Ok(None)) => {
+                return Err(AppError::Transport(
+                    "SSE stream ended before endpoint event".to_string(),
+                ));
+            }
+            Ok(Err(e)) => {
+                return Err(AppError::Transport(format!("SSE error: {e}")));
+            }
+            Err(_) => {
+                return Err(AppError::Transport(
+                    "Timed out waiting for endpoint event".to_string(),
+                ));
             }
         }
+    }
+}
 
-        // Only process "message" events (or events with no explicit type, which default to "message")
-        if !event_type.is_empty() && event_type != "message" {
-            debug!("Legacy SSE: ignoring event type={event_type}");
-            continue;
+/// Resolve an `endpoint` event's data — which may be absolute or relative —
+/// against the original SSE URL's origin.
+fn resolve_endpoint(endpoint: &str, base_url: &str) -> Result<String, AppError> {
+    if endpoint.is_empty() {
+        return Err(AppError::Transport("Empty endpoint event data".to_string()));
+    }
+    if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+        return Ok(endpoint.to_string());
+    }
+    let origin_end = base_url
+        .find("://")
+        .map(|i| {
+            base_url[i + 3..]
+                .find('/')
+                .map(|j| i + 3 + j)
+                .unwrap_or(base_url.len())
+        })
+        .unwrap_or(base_url.len());
+    let origin = &base_url[..origin_end];
+    let path = if endpoint.starts_with('/') {
+        endpoint.to_string()
+    } else {
+        format!("/{endpoint}")
+    };
+    Ok(format!("{origin}{path}"))
+}
+
+async fn dispatch_response(pending: &PendingMap, rpc: JsonRpcResponse) {
+    let id_str = match &rpc.id {
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        _ => {
+            debug!("Legacy SSE: response with no/unexpected id");
+            return;
         }
+    };
+    let mut map = pending.lock().await;
+    if let Some(tx) = map.remove(&id_str) {
+        debug!("Legacy SSE: dispatching response for id={id_str}");
+        let _ = tx.send(rpc);
+    } else {
+        debug!("Legacy SSE: no waiter for id={id_str}");
+    }
+}
 
-        if data_parts.is_empty() {
-            continue;
-        }
-
-        let json_text = data_parts.join("");
-        let rpc_response: JsonRpcResponse = match serde_json::from_str(&json_text) {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("Legacy SSE: failed to parse JSON-RPC from SSE data: {e} — raw: {json_text}");
-                continue;
-            }
-        };
-
-        // Extract the id to find the matching pending request
-        let id_str = match &rpc_response.id {
-            Some(serde_json::Value::Number(n)) => n.to_string(),
-            Some(serde_json::Value::String(s)) => s.clone(),
-            _ => {
-                debug!("Legacy SSE: received response with no/unexpected id, ignoring");
-                continue;
-            }
-        };
-
-        let mut map = pending.lock().await;
-        if let Some(tx) = map.remove(&id_str) {
-            debug!("Legacy SSE: dispatching response for id={id_str}");
-            let _ = tx.send(rpc_response);
-        } else {
-            debug!("Legacy SSE: received response for unknown id={id_str}, ignoring");
-        }
+async fn drain_pending_with_error(pending: &PendingMap, msg: &str) {
+    let mut map = pending.lock().await;
+    for (id, tx) in map.drain() {
+        let _ = tx.send(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::Value::String(id)),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -1,
+                message: msg.to_string(),
+                data: None,
+            }),
+        });
     }
 }
 
@@ -628,7 +569,6 @@ fn extract_json_from_sse(body: &str) -> Result<String, AppError> {
         if let Some(event_type) = line.strip_prefix("event:") {
             current_event = event_type.trim().to_string();
         } else if let Some(data) = line.strip_prefix("data:") {
-            // Accept "message" events or events with no type (default is "message")
             if current_event.is_empty() || current_event == "message" {
                 json_parts.push(data.trim().to_string());
             }

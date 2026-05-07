@@ -41,3 +41,5 @@ sysinfo = "0.33"
 toml = "1.0.1"
 tauri-plugin-dialog = "2"
 async-stream = "0.3.6"
+eventsource-client = { version = "0.17", features = ["hyper-rustls-native-roots"] }
+launchdarkly-sdk-transport = { version = "0.1", features = ["hyper-rustls-native-roots"] }
