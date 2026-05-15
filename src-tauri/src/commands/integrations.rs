@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::mcp::proxy::ProxyState;
 use crate::persistence::{save_enabled_integrations, save_servers};
+use crate::state::registry::detect_http_proxy;
 use crate::state::{ServerConfig, ServerStatus, ServerTransport, SharedState};
 
 /// How to parse a tool's config file.
@@ -186,6 +187,34 @@ fn is_proxy_url(url: &str) -> bool {
     }
 }
 
+/// If this `mcpServers` entry points to one of our proxy endpoints, return the URL.
+///
+/// Detects two forms:
+/// - `{ "url": "http://localhost:.../mcp/..." }` — http transport (Claude Code, Cursor, …)
+/// - `{ "command": "npx", "args": [..., "mcp-remote", URL, ...] }` — stdio wrapper for
+///   Claude Desktop, which rejects the http schema and only accepts stdio entries.
+fn extract_proxy_url(entry: &serde_json::Value) -> Option<String> {
+    if let Some(url) = entry.get("url").and_then(|v| v.as_str()) {
+        if is_proxy_url(url) {
+            return Some(url.to_string());
+        }
+    }
+
+    let command = entry.get("command").and_then(|v| v.as_str())?;
+    let args: Vec<String> = entry
+        .get("args")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+    let target = detect_http_proxy(command, &args)?;
+    if is_proxy_url(&target.url) {
+        Some(target.url)
+    } else {
+        None
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Config parsing — format-specific
 // ---------------------------------------------------------------------------
@@ -221,14 +250,16 @@ fn parse_mcp_servers(path: &Path) -> (bool, u16, Vec<ExistingMcpServer>) {
     let mut existing = Vec::new();
 
     for (key, value) in servers_obj {
-        let entry_url = value.get("url").and_then(|u| u.as_str()).unwrap_or("");
-
-        // Detect our proxy entries
-        if key == DISCOVERY_SERVER_NAME || is_proxy_url(entry_url) {
+        // Detect our proxy entries (direct http url or stdio mcp-remote wrapper)
+        if let Some(proxy_url) = extract_proxy_url(value) {
             enabled = true;
             if port == 0 {
-                port = extract_port_from_url(entry_url);
+                port = extract_port_from_url(&proxy_url);
             }
+            continue;
+        }
+        if key == DISCOVERY_SERVER_NAME {
+            enabled = true;
             continue;
         }
 
@@ -494,12 +525,11 @@ fn import_mcp_servers(path: &Path) -> Result<Vec<ServerConfig>, AppError> {
     };
     let mut result = Vec::new();
     for (key, value) in servers_obj {
-        // Skip discovery entry and proxy URLs
+        // Skip discovery entry and proxy URLs (http url or stdio mcp-remote wrapper)
         if key == DISCOVERY_SERVER_NAME {
             continue;
         }
-        let entry_url = value.get("url").and_then(|u| u.as_str()).unwrap_or("");
-        if is_proxy_url(entry_url) {
+        if extract_proxy_url(value).is_some() {
             continue;
         }
 
@@ -1140,9 +1170,22 @@ fn write_mcp_servers_config(
     // Replace mcpServers with only our proxy entries.
     // Imported servers are now managed by Agent Hub and proxied through it —
     // keeping originals would cause duplicate connections from the AI tool.
+    //
+    // Claude Desktop only accepts stdio entries in mcpServers (it logs
+    // "Skipped invalid MCP server config entries" and ignores the http schema),
+    // so wrap the proxy URL with `npx mcp-remote` as a stdio bridge.
+    // --allow-http is required for non-HTTPS localhost URLs.
     let mut mcp_servers = serde_json::Map::new();
     for (name, url) in entries {
-        mcp_servers.insert(name, serde_json::json!({ "type": "http", "url": url }));
+        let entry = if tool_id == "claude-desktop" {
+            serde_json::json!({
+                "command": "npx",
+                "args": ["-y", "mcp-remote", url, "--allow-http"],
+            })
+        } else {
+            serde_json::json!({ "type": "http", "url": url })
+        };
+        mcp_servers.insert(name, entry);
     }
 
     config["mcpServers"] = serde_json::Value::Object(mcp_servers);

@@ -1,6 +1,6 @@
 {
   "name": "agent-hub",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Native macOS app for managing MCP servers",
   "type": "module",
   "scripts": {
